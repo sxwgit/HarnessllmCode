@@ -8,7 +8,4 @@ harness非常火（2026-04-13，不知道后面这还会不会非常火）
 
 ## 公开说明
 
-- 根目录 [public_guide.md](public_guide.md) 记录了公开导出和推送流程
-- 执行 `bash scripts/create_public_workspace_repo.sh` 后，`README.md` 和 `public_guide.md` 都会进入公开仓库
-
 本次 README 先作为公开仓库入口说明，后续再继续补充项目介绍、能力边界和使用示例。

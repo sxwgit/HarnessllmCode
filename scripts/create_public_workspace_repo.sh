@@ -150,6 +150,8 @@ ensure_branch() {
 
 echo "Preparing public workspace export at: ${OUT_DIR}"
 
+ensure_branch
+
 for relative_dir in "${EXPORT_DIRS[@]}"; do
   sync_dir "${relative_dir}"
 done
@@ -198,8 +200,6 @@ export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Public Release}"
 export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-public-release@example.com}"
 export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-${GIT_AUTHOR_NAME}}"
 export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-${GIT_AUTHOR_EMAIL}}"
-
-ensure_branch
 
 git -C "${OUT_DIR}" add -A .
 

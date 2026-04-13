@@ -1,0 +1,11 @@
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.env
+.DS_Store
+project_logs/
+project_state.json
+dist/
+*.tmp
+*.temp

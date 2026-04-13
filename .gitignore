@@ -1,0 +1,17 @@
+.DS_Store
+.claude/
+node_modules/
+meta_logs/
+project_logs/
+**/node_modules/
+**/meta_logs/
+**/project_logs/
+**/audit/
+**/checkpoints/
+**/*.local.json
+**/*.tmp
+**/*.temp
+**/*.log
+**/.tmp-vitest-report.json
+**/meta_state.json
+**/project_state.json

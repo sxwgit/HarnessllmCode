@@ -1,0 +1,23 @@
+{
+  "version": "0.1.0",
+  "llm": {
+    "baseURL": "https://api.minimaxi.com/anthropic",
+    "model": "MiniMax-M2.7-highspeed",
+    "maxTokens": 32768,
+    "temperature": 0.7
+  },
+  "thresholds": {
+    "maxRetries": 3,
+    "maxSprintIterations": 3,
+    "maxRollbacks": 2,
+    "maxNegotiationRounds": 3,
+    "evaluationPassScore": 7,
+    "evaluationMinDimensionScore": 6
+  },
+  "paths": {
+    "workspaceRoot": "../",
+    "ideaFile": "../docs/idea.md",
+    "targetProject": "../target_project",
+    "metaLogs": "./meta_logs"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "harness-meta",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Autonomous multi-agent code development harness framework",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.23.0",
+    "execa": "^9.5.0",
+    "fast-glob": "^3.3.0",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

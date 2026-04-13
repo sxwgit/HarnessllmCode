@@ -196,7 +196,7 @@ describe('M13 phase post-condition hardening', () => {
 
     const badContract = sampleSprintContract().replace(
       '双方确认',
-      'TBD 待确认 TBD 待确认 TBD',
+      'TBD 待确认 TBD 待确认 TBD 待确认',
     );
     const contractPath = resolve(contractDir, 'sprint_contract_sprint-01.md');
     writeFileSync(contractPath, badContract, 'utf-8');

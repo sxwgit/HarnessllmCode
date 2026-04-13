@@ -108,6 +108,7 @@ EXPORT_FILES=(
   "CLAUDE.md"
   "PUBLIC_RELEASE.md"
   "README.md"
+  "public_guide.md"
 )
 
 sync_dir() {

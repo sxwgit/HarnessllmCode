@@ -1,10 +1,20 @@
+/**
+ * M11 断点续跑 — 测试分类: behavioral
+ *
+ * 验证意图：覆盖 CheckpointManager 的保存/恢复/排序行为。
+ * 包括：checkpoint 保存与恢复、已完成 sprint 不重跑、当前 sprint 优先执行、
+ * DEV 子状态恢复不回退到 PLANNING、phase skip 真实生效、sprint 排序逻辑。
+ * 所有测试基于真实 checkpoint 文件和状态机行为。
+ */
 import { resolve } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { HarnessConfig } from '../src/config.js';
 import { CheckpointManager } from '../src/orchestrator/checkpoint.js';
+import { Harness } from '../src/orchestrator/harness.js';
 import { StateMachine } from '../src/state/machine.js';
 import { HarnessState } from '../src/types.js';
-import { createWorkspaceFixture, makeLogger, readHarnessFile } from './helpers/fixtures.js';
+import { createWorkspaceFixture, makeLogger } from './helpers/fixtures.js';
 
 const fixtures: Array<{ cleanup: () => void }> = [];
 afterEach(() => {
@@ -17,6 +27,34 @@ function useFixture() {
   const fixture = createWorkspaceFixture();
   fixtures.push(fixture);
   return fixture;
+}
+
+function makeHarnessConfig(rootDir: string, metaDir: string, targetDir: string): HarnessConfig {
+  return {
+    version: '0.1.0',
+    llm: {
+      baseURL: 'http://localhost:1234',
+      apiKey: 'test-key',
+      apiKeyEnvVar: 'TEST_API_KEY',
+      model: 'test-model',
+      maxTokens: 2048,
+      temperature: 0,
+    },
+    thresholds: {
+      maxRetries: 2,
+      maxSprintIterations: 2,
+      maxRollbacks: 1,
+      maxNegotiationRounds: 2,
+      evaluationPassScore: 7,
+      evaluationMinDimensionScore: 6,
+    },
+    paths: {
+      workspaceRoot: rootDir,
+      ideaFile: resolve(targetDir, 'idea.md'),
+      targetProject: targetDir,
+      metaLogs: resolve(metaDir, 'meta_logs'),
+    },
+  };
 }
 
 describe('M11 checkpoint resume hardening', () => {
@@ -102,14 +140,17 @@ describe('M11 checkpoint resume hardening', () => {
     expect(manager.getAll().length).toBe(0);
   });
 
-  it('RESUME_UNIT_004 normalizeCheckpointState maps sprint sub-states to SPRINT_DISPATCH', () => {
-    // Verify the fix: sprint sub-states should map to SPRINT_DISPATCH, not PLANNING
-    const harness = readHarnessFile('src/orchestrator/harness.ts');
+  it('RESUME_UNIT_004 resume from sprint sub-state skips completed top-level phases but does not skip FINAL_ACCEPTANCE', () => {
+    const { rootDir, metaDir, targetDir } = useFixture();
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
 
-    // The normalizeCheckpointState function should map sprint sub-states to SPRINT_DISPATCH
-    expect(harness).toContain('return HarnessState.SPRINT_DISPATCH');
-    // Should NOT contain the old bug
-    expect(harness).not.toMatch(/sprintSubStates\.includes\(state\)\s*\)\s*\{\s*return HarnessState\.PLANNING/);
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.META_INIT)).toBe(true);
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.PROJECT_INIT)).toBe(true);
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.REQUIREMENT_PARSE)).toBe(true);
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.PLANNING)).toBe(true);
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.SPRINT_DISPATCH)).toBe(true);
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.FINAL_ACCEPTANCE)).toBe(false);
   });
 
   it('RESUME_UNIT_005 completed sprints are not re-added to execution queue', () => {
@@ -143,17 +184,30 @@ describe('M11 checkpoint resume hardening', () => {
     expect(machine.getSprint('sprint-03')?.status).toBe('pending');
   });
 
-  it('RESUME_UNIT_006 buildSprintExecutionOrder prioritizes in-progress sprint', () => {
-    // Verify the execution ordering logic exists in harness
-    const harness = readHarnessFile('src/orchestrator/harness.ts');
+  it('RESUME_UNIT_006 buildSprintExecutionOrder prioritizes the in-progress sprint and excludes completed ones', () => {
+    const { rootDir, metaDir, targetDir } = useFixture();
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
 
-    // buildSprintExecutionOrder should prioritize currentSprintId
-    expect(harness).toContain('buildSprintExecutionOrder');
-    // It should filter out completed sprints
-    expect(harness).toContain('completed');
-    // It should put the current sprint first
-    expect(harness).toContain('prioritized');
-    expect(harness).toContain('currentSprintId');
+    const machine = (harness as any).stateMachine as StateMachine;
+    machine.addSprint({ id: 'sprint-01', name: 'S1', priority: 1, goals: [], deliverables: [], dependencies: [], status: 'pending' });
+    machine.addSprint({ id: 'sprint-02', name: 'S2', priority: 2, goals: [], deliverables: [], dependencies: [], status: 'pending' });
+    machine.addSprint({ id: 'sprint-03', name: 'S3', priority: 3, goals: [], deliverables: [], dependencies: [], status: 'pending' });
+
+    machine.restoreFromCheckpoint({
+      id: 'cp-order',
+      timestamp: '2026-04-08T00:00:00.000Z',
+      state: HarnessState.DEV,
+      currentSprintId: 'sprint-02',
+      completedSprints: ['sprint-01'],
+      meta: { totalTokensUsed: 10, totalIterations: 2, exceptionsHandled: 0 },
+      gitInfo: { currentBranch: 'sprint/sprint-02', lastCommit: 'abc123', tags: ['v0.1.0-plan-complete'] },
+      sprintSubState: HarnessState.DEV,
+      sprintIteration: 2,
+    });
+
+    const order = (harness as any).buildSprintExecutionOrder(['sprint-01', 'sprint-02', 'sprint-03']);
+    expect(order).toEqual(['sprint-02', 'sprint-03']);
   });
 
   it('RESUME_UNIT_007 checkpoint without sprintSubState is backwards compatible', () => {

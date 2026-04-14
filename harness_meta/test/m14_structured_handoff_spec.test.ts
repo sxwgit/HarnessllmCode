@@ -1,7 +1,17 @@
+/**
+ * M14 结构化交接与反作弊 — 测试分类: anti-cheat + behavioral
+ *
+ * 验证意图：覆盖 ArtifactValidator 的结构化提取和反作弊能力。
+ * 包括：ReviewReport 结构化解析、"通过"但分数不达标拒绝、缺维度拒绝、
+ * 空壳 architecture/sprint plan 拒绝、harness 集成验证。
+ * 所有测试验证真实 ArtifactValidator 返回值，无源码字符串断言。
+ */
 import { resolve } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { HarnessConfig } from '../src/config.js';
 import { ArtifactValidator } from '../src/artifacts/validator.js';
+import { Harness } from '../src/orchestrator/harness.js';
 import { createWorkspaceFixture, makeLogger, sampleReviewReport } from './helpers/fixtures.js';
 
 const fixtures: Array<{ cleanup: () => void }> = [];
@@ -15,6 +25,34 @@ function useFixture() {
   const fixture = createWorkspaceFixture();
   fixtures.push(fixture);
   return fixture;
+}
+
+function makeHarnessConfig(rootDir: string, metaDir: string, targetDir: string): HarnessConfig {
+  return {
+    version: '0.1.0',
+    llm: {
+      baseURL: 'http://localhost:1234',
+      apiKey: 'test-key',
+      apiKeyEnvVar: 'TEST_API_KEY',
+      model: 'test-model',
+      maxTokens: 2048,
+      temperature: 0,
+    },
+    thresholds: {
+      maxRetries: 2,
+      maxSprintIterations: 2,
+      maxRollbacks: 1,
+      maxNegotiationRounds: 2,
+      evaluationPassScore: 7,
+      evaluationMinDimensionScore: 6,
+    },
+    paths: {
+      workspaceRoot: rootDir,
+      ideaFile: resolve(targetDir, 'idea.md'),
+      targetProject: targetDir,
+      metaLogs: resolve(metaDir, 'meta_logs'),
+    },
+  };
 }
 
 describe('M14 structured handoff hardening', () => {
@@ -39,8 +77,10 @@ describe('M14 structured handoff hardening', () => {
   });
 
   it('STRUCT_UNIT_002 (anti-cheat) ReviewReport with "通过" text but scores below threshold', () => {
-    const { metaDir } = useFixture();
+    const { rootDir, metaDir, targetDir } = useFixture();
     const validator = new ArtifactValidator(makeLogger(resolve(metaDir, 'meta_logs')));
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
 
     const cheatingReport = `# Review Report
 
@@ -64,25 +104,27 @@ describe('M14 structured handoff hardening', () => {
 ## 验收结果
 通过
 `;
-    const result = validator.extractReviewReportData(cheatingReport);
+    const reportPath = resolve(targetDir, 'docs/sprint/review_report_sprint-01.md');
+    writeFileSync(reportPath, cheatingReport, 'utf-8');
 
-    // Structured parsing sees "通过" → passed = true, but scores are low
+    const result = validator.extractReviewReportData(cheatingReport);
+    const validation = validator.validateReviewReport(reportPath);
+
     expect(result.passed).toBe(true);
     expect(result.weightedAverage).toBe(3.6);
-
-    // The harness checkEvaluationPassed would still reject because:
-    // - weightedAverage (3.6) < threshold (7)
-    // - dimension scores < 6
-    // This validates that structured parsing + threshold logic work together
+    expect(validation.valid).toBe(true);
     expect(result.weightedAverage).toBeLessThan(7);
     for (const score of result.scores) {
       expect(score.score).toBeLessThan(6);
     }
+    expect((harness as any).checkEvaluationPassed(cheatingReport)).toBe(false);
   });
 
   it('STRUCT_UNIT_003 (anti-cheat) ReviewReport missing scoring dimensions', () => {
-    const { metaDir } = useFixture();
+    const { rootDir, metaDir, targetDir } = useFixture();
     const validator = new ArtifactValidator(makeLogger(resolve(metaDir, 'meta_logs')));
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
 
     const incompleteReport = `# Review Report
 
@@ -98,12 +140,17 @@ describe('M14 structured handoff hardening', () => {
 ## 验收结果
 通过
 `;
-    const result = validator.extractReviewReportData(incompleteReport);
+    const reportPath = resolve(targetDir, 'docs/sprint/review_report_sprint-01.md');
+    writeFileSync(reportPath, incompleteReport, 'utf-8');
 
-    // Only 1 dimension parsed
+    const result = validator.extractReviewReportData(incompleteReport);
+    const validation = validator.validateReviewReport(reportPath);
+
     expect(result.scores.length).toBeLessThan(5);
     expect(result.passed).toBe(true);
-    // harness would reject due to missing dimensions
+    expect(validation.valid).toBe(false);
+    expect(validation.errors).toContain('Review report must include all 5 scoring dimensions');
+    expect((harness as any).checkEvaluationPassed(incompleteReport)).toBe(false);
   });
 
   it('STRUCT_UNIT_004 ReviewReport with "不通过" conclusion', () => {
@@ -175,9 +222,8 @@ Layered architecture with 3 tiers.
 
     const result = validator.validateFile(archPath);
 
-    // The extraction should populate layers, coreModules, dataModels
-    // from the Markdown content
-    // Validation passes if extraction produces valid structure
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
     expect(result.file).toBe(archPath);
   });
 
@@ -191,9 +237,10 @@ Layered architecture with 3 tiers.
     writeFileSync(archPath, '# Architecture Design\n\n## 架构层次\n\n## 核心模块\n\n## 数据模型\n\n## 技术栈\n- Runtime: Node.js\n- Language: TypeScript\n', 'utf-8');
 
     const result = validator.validateFile(archPath);
-    // Empty sections should result in empty arrays which fail the Zod schema
-    // or at minimum produce warnings
-    expect(result.file).toBe(archPath);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('Architecture design must define at least one concrete layer when layer sections are declared');
+    expect(result.errors).toContain('Architecture design must define at least one concrete core module when module sections are declared');
+    expect(result.errors).toContain('Architecture design must define at least one concrete data model when model sections are declared');
   });
 
   it('STRUCT_UNIT_007 SprintPlan structured extraction extracts sprints and milestones', () => {
@@ -222,7 +269,8 @@ Layered architecture with 3 tiers.
     writeFileSync(planPath, sprintPlanContent, 'utf-8');
 
     const result = validator.validateFile(planPath);
-    // Should extract 2 sprints and 1 milestone
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
     expect(result.file).toBe(planPath);
   });
 
@@ -268,14 +316,31 @@ Build dashboard.
   });
 
   it('STRUCT_UNIT_010 structured evaluation parsing is used in harness', () => {
-    const harness = require('fs').readFileSync(
-      resolve(__dirname, '../src/orchestrator/harness.ts'),
-      'utf-8',
-    );
+    const { rootDir, metaDir, targetDir } = useFixture();
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
 
-    // Verify the harness uses the structured parsing method
-    expect(harness).toContain('extractReviewReportData');
-    expect(harness).toContain('structured.passed');
-    expect(harness).toContain('structured.weightedAverage');
+    expect((harness as any).checkEvaluationPassed(sampleReviewReport())).toBe(true);
+
+    const ambiguousReport = `# Review Report
+
+## 验收基本信息
+- Sprint ID: sprint-01
+
+## 评分
+- 功能完整性: 8
+- 代码质量: 8
+- 可运行性: 8
+- 可测试性: 8
+- 安全性: 8
+
+## 整体加权平均分
+8.0
+
+## 验收结果
+待确认
+`;
+
+    expect((harness as any).checkEvaluationPassed(ambiguousReport)).toBe(false);
   });
 });

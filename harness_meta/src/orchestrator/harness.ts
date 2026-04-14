@@ -402,7 +402,18 @@ export class Harness {
 
       this.log('目标项目初始化完成');
     } else {
-      this.log('目标项目已存在，跳过初始化');
+      await this.git.ensureBranch('dev');
+      const repair = this.reconcileExistingTargetProjectInitialization();
+
+      if (repair.changed) {
+        await this.git.addAll();
+        await this.git.commit('chore', 'project', 'backfill target project initialization contract', {
+          allowProtectedBranchCommit: true,
+        });
+        this.log(`目标项目已存在，已补齐初始化契约: ${repair.repaired.join(', ')}`);
+      } else {
+        this.log('目标项目已存在，初始化契约完整，跳过初始化');
+      }
     }
 
     // Verify isolation after init
@@ -412,6 +423,72 @@ export class Harness {
     this.assertPostCondition(HarnessState.PROJECT_INIT);
     this.saveCheckpoint(HarnessState.PROJECT_INIT);
     this.stateMachine.transitionMeta(HarnessState.REQUIREMENT_PARSE);
+    this.stateMachine.transitionProject(HarnessState.REQUIREMENT_PARSE);
+  }
+
+  private reconcileExistingTargetProjectInitialization(): { changed: boolean; repaired: string[] } {
+    let changed = false;
+    const repaired: string[] = [];
+    const requiredDirs = ['docs/plan', 'docs/sprint', 'docs/report', 'src', 'test'];
+
+    for (const dir of requiredDirs) {
+      const dirPath = resolve(this.targetDir, dir);
+      if (!existsSync(dirPath)) {
+        mkdirSync(dirPath, { recursive: true });
+        changed = true;
+        repaired.push(dir);
+      }
+    }
+
+    const gitignorePath = resolve(this.targetDir, '.gitignore');
+    const requiredIgnoreEntries = [
+      'node_modules/',
+      '__pycache__/',
+      '*.pyc',
+      'venv/',
+      '.env',
+      '.DS_Store',
+      'project_logs/',
+      'project_state.json',
+      'dist/',
+      '*.tmp',
+      '*.temp',
+    ];
+    const existingIgnoreEntries = existsSync(gitignorePath)
+      ? readFileSync(gitignorePath, 'utf-8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+      : [];
+    const mergedIgnoreEntries = [...existingIgnoreEntries];
+
+    for (const entry of requiredIgnoreEntries) {
+      if (!mergedIgnoreEntries.includes(entry)) {
+        mergedIgnoreEntries.push(entry);
+      }
+    }
+
+    if (!existsSync(gitignorePath) || mergedIgnoreEntries.length !== existingIgnoreEntries.length) {
+      writeFileSync(gitignorePath, `${mergedIgnoreEntries.join('\n')}\n`, 'utf-8');
+      changed = true;
+      repaired.push('.gitignore');
+    }
+
+    const ideaPath = resolve(this.targetDir, 'idea.md');
+    const ideaContent = readFileSync(this.config.paths.ideaFile, 'utf-8');
+    if (!existsSync(ideaPath) || readFileSync(ideaPath, 'utf-8') !== ideaContent) {
+      writeFileSync(ideaPath, ideaContent, 'utf-8');
+      changed = true;
+      repaired.push('idea.md');
+    }
+
+    const currentMode = statSync(ideaPath).mode & 0o777;
+    if ((currentMode & 0o222) !== 0) {
+      repaired.push('idea.md(read-only)');
+    }
+    chmodSync(ideaPath, 0o444);
+
+    return { changed, repaired };
   }
 
   // ============ Step 2: REQUIREMENT_PARSE ============
@@ -419,6 +496,7 @@ export class Harness {
   private async requirementParse(): Promise<string> {
     this.metrics.startPhase('REQUIREMENT_PARSE');
     this.log('>>> REQUIREMENT_PARSE - 解析需求文档');
+    this.stateMachine.transitionProject(HarnessState.REQUIREMENT_PARSE);
 
     const standardReqPath = resolve(this.targetDir, 'standard_requirement.md');
 
@@ -430,7 +508,9 @@ export class Harness {
       this.log('标准化需求已存在，跳过');
       this.metrics.endPhase('REQUIREMENT_PARSE');
       this.stateMachine.transitionMeta(HarnessState.REQUIREMENT_PARSE);
+      this.stateMachine.transitionProject(HarnessState.REQUIREMENT_PARSE);
       this.stateMachine.transitionMeta(HarnessState.PLANNING);
+      this.stateMachine.transitionProject(HarnessState.PLANNING);
       return readFileSync(standardReqPath, 'utf-8');
     }
 
@@ -465,6 +545,7 @@ export class Harness {
     this.assertPostCondition(HarnessState.REQUIREMENT_PARSE);
     this.saveCheckpoint(HarnessState.REQUIREMENT_PARSE);
     this.stateMachine.transitionMeta(HarnessState.PLANNING);
+    this.stateMachine.transitionProject(HarnessState.PLANNING);
     this.log('需求解析完成');
     return standardReq;
   }
@@ -474,6 +555,7 @@ export class Harness {
   private async planning(standardReq: string): Promise<void> {
     this.metrics.startPhase('PLANNING');
     this.log('>>> PLANNING - 规划设计');
+    this.stateMachine.transitionProject(HarnessState.PLANNING);
 
     const planDir = resolve(this.targetDir, 'docs/plan');
     const requiredFiles = ['product_spec.md', 'architecture_design.md', 'project_structure.md', 'code_standard.md', 'sprint_plan.md'];
@@ -487,6 +569,7 @@ export class Harness {
         this.log('设计文档已全部存在且有效，跳过');
         this.metrics.endPhase('PLANNING');
         this.stateMachine.transitionMeta(HarnessState.SPRINT_DISPATCH);
+        this.stateMachine.transitionProject(HarnessState.SPRINT_DISPATCH);
         return;
       }
     }
@@ -537,6 +620,8 @@ export class Harness {
       throw new Error(`Planning docs validation failed after retries: ${finalPlanningErrors.join('; ')}`);
     }
 
+    this.assertPostCondition(HarnessState.PLANNING);
+
     await this.git.addAll();
     await this.git.commit('docs', 'planner', 'generate complete design documents (5 files)');
     await this.git.mergeBranch('feat/architecture-design', 'dev');
@@ -544,9 +629,9 @@ export class Harness {
     await this.git.deleteBranch('feat/architecture-design');
 
     this.metrics.endPhase('PLANNING');
-    this.assertPostCondition(HarnessState.PLANNING);
     this.saveCheckpoint(HarnessState.PLANNING);
     this.stateMachine.transitionMeta(HarnessState.SPRINT_DISPATCH);
+    this.stateMachine.transitionProject(HarnessState.SPRINT_DISPATCH);
     this.log('规划设计完成');
   }
 
@@ -555,6 +640,7 @@ export class Harness {
   private async sprintLoop(): Promise<void> {
     this.log('>>> SPRINT_DISPATCH - Sprint 循环');
     this.stateMachine.transitionMeta(HarnessState.SPRINT_DISPATCH);
+    this.stateMachine.transitionProject(HarnessState.SPRINT_DISPATCH);
     this.metrics.startPhase('SPRINT_DISPATCH');
 
     const sprintPlanPath = resolve(this.targetDir, 'docs/plan/sprint_plan.md');
@@ -770,6 +856,10 @@ export class Harness {
     }
 
     for (let iteration = startIteration; iteration <= maxIterations; iteration++) {
+      if (iteration > startIteration) {
+        this.stateMachine.transitionMeta(HarnessState.DEV);
+        this.stateMachine.transitionProject(HarnessState.DEV);
+      }
       this.log(`--- ${sprintId}: 迭代 ${iteration}/${maxIterations} ---`);
       this.metrics.recordSprintIteration(sprintId);
       this.saveCheckpoint(HarnessState.DEV, iteration);
@@ -944,9 +1034,11 @@ export class Harness {
     }
 
     // Q-09: Mark sprint as completed in state machine after merge
+    const sprintCompletionTag = this.formatSprintCompletionTag(sprintId);
+    const sprintMilestoneTag = this.formatSprintCompletionMilestone(sprintId);
     this.stateMachine.completeSprint(sprintId);
     this.stateMachine.updateSprint(sprintId, { status: 'completed' });
-    this.stateMachine.addMilestoneTag(`sprint-${sprintId}-complete`);
+    this.stateMachine.addMilestoneTag(sprintMilestoneTag);
 
     // Post-merge verification: run compilation and basic tests
     this.log('合并后验证 - 执行编译和基础测试...');
@@ -962,7 +1054,7 @@ export class Harness {
       this.log(`合并后验证异常: ${err instanceof Error ? err.message : String(err)}, 继续后续流程`);
     }
 
-    await this.git.createTag(`v0.${this.parseSprintNumber(sprintId)}.0-sprint-${sprintId}-complete`);
+    await this.git.createTag(sprintCompletionTag);
     await this.git.deleteBranch(branchName);
 
     this.metrics.endPhase(`SPRINT_${sprintId}`);
@@ -1008,6 +1100,8 @@ ${productSpec}
 
     this.validateFinalAcceptanceReportOrThrow(fallbackReason);
 
+    this.assertPostCondition(HarnessState.FINAL_ACCEPTANCE);
+
     await this.git.addAll();
     await this.git.commit('docs', 'evaluator', 'final acceptance report', {
       allowProtectedBranchCommit: true,
@@ -1015,7 +1109,6 @@ ${productSpec}
     await this.git.createTag('v1.0.0-release-candidate');
 
     this.metrics.endPhase('FINAL_ACCEPTANCE');
-    this.assertPostCondition(HarnessState.FINAL_ACCEPTANCE);
     this.saveCheckpoint(HarnessState.FINAL_ACCEPTANCE);
     this.log('全量验收完成');
   }
@@ -1039,6 +1132,8 @@ ${productSpec}
 
     this.validateReleaseEvidenceOrThrow();
 
+    this.assertPostCondition(HarnessState.RELEASE);
+
     await this.git.addAll();
     await this.git.commit('docs', 'project', 'project summary report with full metrics and delivery docs', {
       allowProtectedBranchCommit: true,
@@ -1048,7 +1143,6 @@ ${productSpec}
     await this.git.createTag('v1.0.0-release');
 
     this.metrics.endPhase('RELEASE');
-    this.assertPostCondition(HarnessState.RELEASE);
     this.saveCheckpoint(HarnessState.RELEASE);
     this.stateMachine.transitionMeta(HarnessState.FINISHED);
     this.stateMachine.transitionProject(HarnessState.FINISHED);
@@ -1236,10 +1330,10 @@ ${productSpec}
       '核心功能覆盖',
       '质量与风险',
       '验收结论',
-      'v1.0.0-release-candidate',
     ];
 
-    return requiredSections.every(section => normalizedIncludes(content, section));
+    return normalizedIncludes(content, 'v1.0.0-release-candidate')
+      && requiredSections.every(section => this.hasMeaningfulMarkdownSection(content, section, section === '验收结论' ? 4 : 6));
   }
 
   private isFinalAcceptanceReportPassing(content: string): boolean {
@@ -1251,8 +1345,12 @@ ${productSpec}
   }
 
   private isDeliveryReadmeComplete(content: string): boolean {
-    const requiredSections = ['# ', '安装', '运行', '测试', '项目结构'];
-    return requiredSections.every(section => normalizedIncludes(content, section));
+    if (!/^#\s+\S+/m.test(content)) return false;
+
+    return this.hasExecutableReadmeSection(content, '安装')
+      && this.hasExecutableReadmeSection(content, '运行')
+      && this.hasExecutableReadmeSection(content, '测试')
+      && this.hasStructureReadmeSection(content, '项目结构');
   }
 
   private validateReleaseEvidenceOrThrow(): void {
@@ -1260,6 +1358,9 @@ ${productSpec}
     const finalAcceptance = existsSync(finalAcceptancePath) ? readFileSync(finalAcceptancePath, 'utf-8') : '';
     if (!this.isFinalAcceptanceReportComplete(finalAcceptance)) {
       throw new Error('Release evidence incomplete: final acceptance report is missing or incomplete');
+    }
+    if (!this.isFinalAcceptanceReportPassing(finalAcceptance)) {
+      throw new Error('Release evidence incomplete: final acceptance report does not record a passing conclusion');
     }
 
     const readmePath = resolve(this.targetDir, 'README.md');
@@ -1276,10 +1377,71 @@ ${productSpec}
       '项目交付物清单',
       '总结与归档说明',
     ];
-    const missingSections = requiredSummarySections.filter(section => !normalizedIncludes(summary, section));
+    const missingSections = requiredSummarySections.filter(section => !this.hasMeaningfulMarkdownSection(summary, section, 6));
     if (missingSections.length > 0) {
       throw new Error(`Release evidence incomplete: project summary report missing sections: ${missingSections.join(', ')}`);
     }
+  }
+
+  private extractMarkdownSection(content: string, heading: string): string | null {
+    const pattern = new RegExp(`^(#{1,4})\\s+.*${heading}.*$`, 'm');
+    const match = content.match(pattern);
+    if (!match || match.index === undefined) return null;
+
+    const level = match[1].length;
+    const startIdx = match.index + match[0].length;
+    const rest = content.substring(startIdx);
+    const lines = rest.split('\n');
+    let endIdx = 0;
+
+    for (const line of lines) {
+      const headingMatch = line.match(/^(#{1,4})\s+/);
+      if (headingMatch && headingMatch[1].length <= level) {
+        break;
+      }
+      endIdx += line.length + 1;
+    }
+
+    return rest.substring(0, endIdx).trim();
+  }
+
+  private hasMeaningfulMarkdownSection(content: string, heading: string, minLength = 10): boolean {
+    const section = this.extractMarkdownSection(content, heading);
+    if (!section) return false;
+
+    const normalized = section
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(line => !/^#{1,6}\s/.test(line))
+      .map(line => line.replace(/^[-*]\s*/, '').replace(/^\d+\.\s*/, '').trim())
+      .join(' ')
+      .replace(/[`*_>|]/g, '')
+      .trim();
+
+    if (!normalized || normalized.length < minLength) return false;
+    if (/^(todo|tbd|待补充|待确认|n\/a|无|none)$/i.test(normalized)) return false;
+    return /[A-Za-z0-9\u4e00-\u9fff]/.test(normalized);
+  }
+
+  private hasExecutableReadmeSection(content: string, heading: string): boolean {
+    const section = this.extractMarkdownSection(content, heading);
+    if (!section) return false;
+
+    if (!this.hasMeaningfulMarkdownSection(content, heading, 4)) return false;
+
+    return /```[\s\S]*?```/.test(section)
+      || /\b(npm|pnpm|yarn|bun|node|npx|python|pip|uv|poetry|go|cargo|make|docker)\b/i.test(section);
+  }
+
+  private hasStructureReadmeSection(content: string, heading: string): boolean {
+    const section = this.extractMarkdownSection(content, heading);
+    if (!section) return false;
+
+    if (!this.hasMeaningfulMarkdownSection(content, heading, 4)) return false;
+
+    return /^[\s>*-]*[A-Za-z0-9_.-]+\/?/m.test(section)
+      || /src\/|test\/|docs\/|package\.json/i.test(section);
   }
 
   private buildDeterministicFinalAcceptanceReport(productSpec: string, fallbackReason?: string): string {
@@ -1484,6 +1646,14 @@ ${structure.map(item => `- ${item}`).join('\n')}
         if (!existsSync(resolve(this.targetDir, 'idea.md'))) {
           errors.push('Post-condition: idea.md not found after PROJECT_INIT');
         }
+        for (const dir of ['docs/plan', 'docs/sprint', 'docs/report', 'src', 'test']) {
+          if (!existsSync(resolve(this.targetDir, dir))) {
+            errors.push(`Post-condition: required directory ${dir} not found after PROJECT_INIT`);
+          }
+        }
+        if (!existsSync(resolve(this.targetDir, '.gitignore'))) {
+          errors.push('Post-condition: .gitignore not found after PROJECT_INIT');
+        }
         break;
       }
       case HarnessState.REQUIREMENT_PARSE: {
@@ -1519,7 +1689,7 @@ ${structure.map(item => `- ${item}`).join('\n')}
       }
       case HarnessState.SPRINT_MERGE: {
         if (context?.sprintId) {
-          const tagPattern = `sprint-${context.sprintId}-complete`;
+          const tagPattern = this.formatSprintCompletionMilestone(context.sprintId);
           const tags = this.stateMachine.getProjectState().milestoneTags;
           if (!tags.some(t => t.includes(tagPattern))) {
             errors.push(`Post-condition: milestone tag for ${context.sprintId} not recorded after SPRINT_MERGE`);
@@ -1543,12 +1713,30 @@ ${structure.map(item => `- ${item}`).join('\n')}
         break;
       }
       case HarnessState.RELEASE: {
-        if (!existsSync(resolve(this.targetDir, 'README.md'))) {
+        const readmePath = resolve(this.targetDir, 'README.md');
+        if (!existsSync(readmePath)) {
           errors.push('Post-condition: README.md not found after RELEASE');
+        } else {
+          const content = readFileSync(readmePath, 'utf-8');
+          if (!this.isDeliveryReadmeComplete(content)) {
+            errors.push('Post-condition: README.md is incomplete after RELEASE');
+          }
         }
         const summaryPath = resolve(this.targetDir, 'docs/report/project_summary_report.md');
         if (!existsSync(summaryPath)) {
           errors.push('Post-condition: project_summary_report.md not found after RELEASE');
+        } else {
+          const summary = readFileSync(summaryPath, 'utf-8');
+          const requiredSections = [
+            '项目基本信息',
+            'Sprint执行情况汇总',
+            '项目交付物清单',
+            '总结与归档说明',
+          ];
+          const missingSections = requiredSections.filter(section => !this.hasMeaningfulMarkdownSection(summary, section, 6));
+          if (missingSections.length > 0) {
+            errors.push(`Post-condition: project_summary_report.md missing sections after RELEASE: ${missingSections.join(', ')}`);
+          }
         }
         break;
       }
@@ -1568,6 +1756,20 @@ ${structure.map(item => `- ${item}`).join('\n')}
       throw new Error('无法从 sprint_plan.md 中解析出任何 Sprint ID。请确保 Sprint 计划包含 "sprint-XX" 格式的标识');
     }
     return [...new Set(matches.map(m => m.toLowerCase()))];
+  }
+
+  private normalizeSprintId(sprintId: string): string {
+    const normalized = sprintId.trim().toLowerCase();
+    if (normalized.startsWith('sprint-')) return normalized;
+    return `sprint-${normalized}`;
+  }
+
+  private formatSprintCompletionMilestone(sprintId: string): string {
+    return `${this.normalizeSprintId(sprintId)}-complete`;
+  }
+
+  private formatSprintCompletionTag(sprintId: string): string {
+    return `v0.${this.parseSprintNumber(sprintId)}.0-${this.formatSprintCompletionMilestone(sprintId)}`;
   }
 
   private parseSprintNumber(sprintId: string): number {

@@ -160,7 +160,7 @@ export class ManualIntervention {
 
       // Git add + commit with manual-fix type
       await execa('git', ['add', auditPath], { cwd: this.targetDir, reject: false });
-      await execa('git', ['commit', '-m', `manual-fix(sprint-${record.phase}): manual intervention ${record.id} — ${record.trigger.substring(0, 80)}`], {
+      await execa('git', ['commit', '-m', `manual-fix(project): record manual intervention ${record.id} (${record.trigger.substring(0, 40)})`], {
         cwd: this.targetDir, reject: false, timeout: 30_000,
       });
       record.gitCommitHash = 'audit-commit-created';

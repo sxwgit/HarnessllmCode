@@ -119,16 +119,64 @@ bash scripts/create_public_workspace_repo.sh
 
 ## 导出后你要做什么
 
-进入同级导出目录，检查一下状态：
+如果你的公开仓库远程已经提前配置好了，那么每次发布时你只需要做下面这几步。
+
+### Step 1：刷新公开导出目录
+
+先在当前工作区根目录执行：
+
+```bash
+bash scripts/create_public_workspace_repo.sh
+```
+
+这一步会把当前可公开内容同步到：
+
+```bash
+../miniopencodev2-public
+```
+
+### Step 2：检查待推内容
+
+导出完成后，先看一下公开仓库状态：
 
 ```bash
 git -C ../miniopencodev2-public status --short --branch
 git -C ../miniopencodev2-public log --oneline -1
 ```
 
-如果没问题，再由你自己推送：
+理想情况是：
+
+- 当前分支是 `public-main`
+- 工作区是干净的
+- 最新一条提交是刚刚生成的公开快照提交
+
+如果你还想确认远程已经配置好，可以额外看一下：
 
 ```bash
+git -C ../miniopencodev2-public remote -v
+```
+
+### Step 3：推送到 GitHub
+
+确认没问题后，直接推送：
+
+```bash
+git -C ../miniopencodev2-public push -u origin public-main
+```
+
+如果这不是第一次推送，也可以用：
+
+```bash
+git -C ../miniopencodev2-public push origin public-main
+```
+
+## 最短发布步骤
+
+如果你的远程已经配置好了，并且你现在就是要把最新公开内容推上去，那最短只需要这 3 步：
+
+```bash
+bash scripts/create_public_workspace_repo.sh
+git -C ../miniopencodev2-public status --short --branch
 git -C ../miniopencodev2-public push -u origin public-main
 ```
 

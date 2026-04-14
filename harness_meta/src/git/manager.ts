@@ -231,6 +231,14 @@ dist/
 
   async ensureBranch(branch: string): Promise<void> {
     if (!await this.branchExists(branch)) {
+      const headExists = (await this.exec(['git', 'rev-parse', '--verify', 'HEAD'], false)).exitCode === 0;
+      const currentBranch = await this.getCurrentBranch();
+
+      if (!headExists && currentBranch) {
+        await this.exec(['git', 'checkout', '-B', branch]);
+        return;
+      }
+
       if (branch === 'dev' && await this.branchExists('main')) {
         await this.exec(['git', 'checkout', 'main']);
         await this.exec(['git', 'checkout', '-b', 'dev']);

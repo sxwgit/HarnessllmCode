@@ -1,3 +1,11 @@
+/**
+ * M12 交付与最终验收 — 测试分类: anti-cheat + behavioral
+ *
+ * 验证意图：覆盖发布证据门禁的全部反作弊场景。
+ * 包括：空壳 final acceptance 报告拒绝、空壳 README 拒绝、空壳 summary report 拒绝、
+ * checkpoint 清理、README 自动生成、release evidence 验证。
+ * 所有测试验证真实 ArtifactValidator 返回值或 Harness 行为，无源码字符串断言。
+ */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -47,6 +55,31 @@ function makeHarnessConfig(rootDir: string, metaDir: string, targetDir: string):
   };
 }
 
+function writeFinalAcceptanceReport(targetDir: string, conclusion = '通过'): void {
+  mkdirSync(resolve(targetDir, 'docs/report'), { recursive: true });
+  writeFileSync(resolve(targetDir, 'docs/report/final_acceptance_report.md'), `# Final Acceptance Report
+
+## 全量验收
+- 版本候选: v1.0.0-release-candidate
+- 验收方式: 全量检查
+
+## 验收范围
+- docs/plan/product_spec.md
+- src/
+
+## 核心功能覆盖
+- 已覆盖核心流程与主要交互
+
+## 质量与风险
+- 当前无阻断发布问题
+
+## 验收结论
+- 结论: ${conclusion}
+
+v1.0.0-release-candidate
+`, 'utf-8');
+}
+
 describe('M12 delivery and final acceptance hardening', () => {
   it('DELIV_UNIT_001 rejects missing final acceptance evidence instead of auto-filling success', () => {
     const { rootDir, metaDir, targetDir } = useFixture();
@@ -62,22 +95,38 @@ describe('M12 delivery and final acceptance hardening', () => {
 
   it('DELIV_UNIT_001A rejects final acceptance reports without an explicit passing conclusion', () => {
     const { rootDir, metaDir, targetDir } = useFixture();
-    mkdirSync(resolve(targetDir, 'docs/report'), { recursive: true });
-    writeFileSync(resolve(targetDir, 'docs/report/final_acceptance_report.md'), `# Final Acceptance Report
-
-## 全量验收
-## 验收范围
-## 核心功能覆盖
-## 质量与风险
-## 验收结论
-- 结论: 不通过
-v1.0.0-release-candidate
-`, 'utf-8');
+    writeFinalAcceptanceReport(targetDir, '不通过');
 
     const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
     (harness as any).initInfrastructure();
     expect(() => (harness as any).validateFinalAcceptanceReportOrThrow()).toThrow(
       'Final acceptance report does not record a passing conclusion',
+    );
+  });
+
+  it('DELIV_UNIT_001B rejects shell final acceptance reports that only contain section headings', () => {
+    const { rootDir, metaDir, targetDir } = useFixture();
+    mkdirSync(resolve(targetDir, 'docs/report'), { recursive: true });
+    writeFileSync(resolve(targetDir, 'docs/report/final_acceptance_report.md'), `# Final Acceptance Report
+
+## 全量验收
+
+## 验收范围
+
+## 核心功能覆盖
+
+## 质量与风险
+
+## 验收结论
+
+v1.0.0-release-candidate
+`, 'utf-8');
+
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
+
+    expect(() => (harness as any).validateFinalAcceptanceReportOrThrow()).toThrow(
+      'Final acceptance report missing or incomplete',
     );
   });
 
@@ -126,24 +175,57 @@ v1.0.0-release-candidate
 
   it('DELIV_UNIT_004 rejects release when README evidence is incomplete', () => {
     const { rootDir, metaDir, targetDir } = useFixture();
-    mkdirSync(resolve(targetDir, 'docs/report'), { recursive: true });
-    writeFileSync(resolve(targetDir, 'docs/report/final_acceptance_report.md'), `# Final Acceptance Report
-
-## 全量验收
-## 验收范围
-## 核心功能覆盖
-## 质量与风险
-## 验收结论
-- 结论: 通过
-v1.0.0-release-candidate
-`, 'utf-8');
+    writeFinalAcceptanceReport(targetDir);
     writeFileSync(resolve(targetDir, 'README.md'), '# demo\n', 'utf-8');
     writeFileSync(resolve(targetDir, 'docs/report/project_summary_report.md'), `# 项目全流程总结报告
 
 ## 一、项目基本信息
+Demo project
+
 ## 七、Sprint执行情况汇总
+All done
+
 ## 八、项目交付物清单
+src/
+
 ## 九、总结与归档说明
+Archived.
+`, 'utf-8');
+
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
+
+    expect(() => (harness as any).validateReleaseEvidenceOrThrow()).toThrow(
+      'Release evidence incomplete: README is missing or incomplete',
+    );
+  });
+
+  it('DELIV_UNIT_004A rejects release when README only contains empty section shells', () => {
+    const { rootDir, metaDir, targetDir } = useFixture();
+    writeFinalAcceptanceReport(targetDir, '通过，可发布');
+    writeFileSync(resolve(targetDir, 'README.md'), `# demo
+
+## 安装
+
+## 运行
+
+## 测试
+
+## 项目结构
+`, 'utf-8');
+    writeFileSync(resolve(targetDir, 'docs/report/project_summary_report.md'), `# 项目全流程总结报告
+
+## 一、项目基本信息
+Demo project
+
+## 七、Sprint执行情况汇总
+All done
+
+## 八、项目交付物清单
+src/
+
+## 九、总结与归档说明
+Archived
 `, 'utf-8');
 
     const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
@@ -156,25 +238,65 @@ v1.0.0-release-candidate
 
   it('DELIV_UNIT_005 rejects release when summary evidence is incomplete', () => {
     const { rootDir, metaDir, targetDir } = useFixture();
-    mkdirSync(resolve(targetDir, 'docs/report'), { recursive: true });
-    writeFileSync(resolve(targetDir, 'docs/report/final_acceptance_report.md'), `# Final Acceptance Report
-
-## 全量验收
-## 验收范围
-## 核心功能覆盖
-## 质量与风险
-## 验收结论
-- 结论: 通过
-v1.0.0-release-candidate
-`, 'utf-8');
+    writeFinalAcceptanceReport(targetDir);
     writeFileSync(resolve(targetDir, 'README.md'), `# demo
 
 ## 安装
+npm install
+
 ## 运行
+npm run start
+
 ## 测试
+npm test
+
 ## 项目结构
+- src/
 `, 'utf-8');
     writeFileSync(resolve(targetDir, 'docs/report/project_summary_report.md'), '# partial summary\n', 'utf-8');
+
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
+
+    expect(() => (harness as any).validateReleaseEvidenceOrThrow()).toThrow(
+      'Release evidence incomplete: project summary report missing sections',
+    );
+  });
+
+  it('DELIV_UNIT_005A rejects release when summary report sections exist but have no substantive content', () => {
+    const { rootDir, metaDir, targetDir } = useFixture();
+    writeFinalAcceptanceReport(targetDir, '通过，可发布');
+    writeFileSync(resolve(targetDir, 'README.md'), `# demo
+
+## 安装
+\`\`\`bash
+npm install
+\`\`\`
+
+## 运行
+\`\`\`bash
+npm run start
+\`\`\`
+
+## 测试
+\`\`\`bash
+npm test
+\`\`\`
+
+## 项目结构
+- src/
+- docs/
+`, 'utf-8');
+    writeFileSync(resolve(targetDir, 'docs/report/project_summary_report.md'), `# 项目全流程总结报告
+
+## 一、项目基本信息
+
+## 七、Sprint执行情况汇总
+
+## 八、项目交付物清单
+
+## 九、总结与归档说明
+`, 'utf-8');
 
     const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
     (harness as any).initInfrastructure();

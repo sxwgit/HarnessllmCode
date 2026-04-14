@@ -256,7 +256,10 @@ export class StateMachine {
     if (current === next) return;
 
     const allowedTransitions: Partial<Record<HarnessState, HarnessState[]>> = {
-      [HarnessState.PROJECT_INIT]: [HarnessState.SPRINT_NEGOTIATION, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.PROJECT_INIT]: [HarnessState.REQUIREMENT_PARSE, HarnessState.SPRINT_NEGOTIATION, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.REQUIREMENT_PARSE]: [HarnessState.PLANNING, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.PLANNING]: [HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.SPRINT_DISPATCH]: [HarnessState.SPRINT_NEGOTIATION, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.SPRINT_NEGOTIATION]: [HarnessState.DEV, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
       [HarnessState.DEV]: [HarnessState.PRE_EVALUATION, HarnessState.SPRINT_NEGOTIATION, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.PRE_EVALUATION]: [HarnessState.EVALUATION, HarnessState.DEV, HarnessState.SPRINT_NEGOTIATION, HarnessState.EXCEPTION_HANDLE],
@@ -265,6 +268,10 @@ export class StateMachine {
       [HarnessState.FINAL_ACCEPTANCE]: [HarnessState.RELEASE, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
       [HarnessState.RELEASE]: [HarnessState.FINISHED, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.EXCEPTION_HANDLE]: [
+        HarnessState.PROJECT_INIT,
+        HarnessState.REQUIREMENT_PARSE,
+        HarnessState.PLANNING,
+        HarnessState.SPRINT_DISPATCH,
         HarnessState.SPRINT_NEGOTIATION,
         HarnessState.DEV,
         HarnessState.PRE_EVALUATION,

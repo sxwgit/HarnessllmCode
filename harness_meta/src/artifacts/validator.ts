@@ -284,6 +284,44 @@ export class ArtifactValidator {
         }
         break;
       }
+      case 'architecture_design.md': {
+        const architecture = this.extractStructuredData(content, 'ArchitectureDesign') as {
+          overallArchitecture?: string;
+          layers?: unknown[];
+          coreModules?: unknown[];
+          dataModels?: unknown[];
+          techStack?: { runtime?: string; language?: string };
+        };
+
+        if (!architecture.overallArchitecture || architecture.overallArchitecture.trim().length < 10) {
+          errors.push('Architecture design must describe the overall architecture concretely');
+        }
+
+        const hasLayerHeading = this.hasHeading(content, '架构层次')
+          || this.hasHeading(content, '分层架构')
+          || this.hasHeading(content, '系统分层');
+        if (hasLayerHeading && (!Array.isArray(architecture.layers) || architecture.layers.length === 0)) {
+          errors.push('Architecture design must define at least one concrete layer when layer sections are declared');
+        }
+
+        const hasModuleHeading = this.hasHeading(content, '核心模块')
+          || this.hasHeading(content, '模块设计')
+          || this.hasHeading(content, '模块划分');
+        if (hasModuleHeading && (!Array.isArray(architecture.coreModules) || architecture.coreModules.length === 0)) {
+          errors.push('Architecture design must define at least one concrete core module when module sections are declared');
+        }
+
+        const hasModelHeading = this.hasHeading(content, '数据模型')
+          || this.hasHeading(content, '数据结构');
+        if (hasModelHeading && (!Array.isArray(architecture.dataModels) || architecture.dataModels.length === 0)) {
+          errors.push('Architecture design must define at least one concrete data model when model sections are declared');
+        }
+
+        if (!architecture.techStack?.runtime || !architecture.techStack?.language) {
+          errors.push('Architecture design must define concrete runtime and language choices');
+        }
+        break;
+      }
       case 'sprint_plan.md': {
         const sprintMatches = content.match(/\bsprint-\d+\b/gi) || [];
         if (sprintMatches.length === 0) {
@@ -899,6 +937,10 @@ export class ArtifactValidator {
     const endIdx = nextHeading ? nextHeading.index! : rest.length;
 
     return rest.substring(0, endIdx).trim();
+  }
+
+  private hasHeading(content: string, heading: string): boolean {
+    return new RegExp(`^#{1,4}\\s+.*${heading}.*$`, 'm').test(content);
   }
 
   private normalizeArtifactType(fileName: string): string {

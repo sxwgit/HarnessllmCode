@@ -1,3 +1,10 @@
+/**
+ * M07 异常处理 / M08 指标体系 — 测试分类: behavioral
+ *
+ * 验证意图：覆盖 5 级异常分类（P0-P4）的行为、升级链路、自适应阈值、
+ * root cause 归档、tool timeout 真实触发、人工介入审计、metrics 数值校验。
+ * 所有测试基于 ExceptionHandler 和 MetricsCollector 的真实运行时行为。
+ */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,6 +14,7 @@ import { getAdaptiveThresholds, parseEffortScore } from '../src/orchestrator/ada
 import { MetricsCollector } from '../src/orchestrator/metrics.js';
 import { IsolationMonitor } from '../src/isolation/monitor.js';
 import { Logger } from '../src/logger/index.js';
+import { BashTool } from '../src/tools/bash.js';
 import { createWorkspaceFixture } from './helpers/fixtures.js';
 
 const fixtures: Array<{ cleanup: () => void }> = [];
@@ -165,12 +173,28 @@ describe('M07 exception handling and M08 metrics', () => {
     expect(archive[0].rootCause).toBeTruthy();
   });
 
-  it('EXC_UNIT_012 configures explicit timeouts for tools and long-running operations', () => {
-    const bashSource = readFileSync(resolve(process.cwd(), 'src/tools/bash.ts'), 'utf-8');
-    const gitSource = readFileSync(resolve(process.cwd(), 'src/git/manager.ts'), 'utf-8');
-    expect(bashSource).toContain('timeout: z.number().optional()');
-    expect(bashSource).toContain('120_000');
-    expect(gitSource).toContain('timeout: 30_000');
+  it('EXC_UNIT_012 triggers real tool timeouts and classifies them as retryable minor exceptions', async () => {
+    const { metaDir, targetDir } = useFixture();
+    const bashTool = new BashTool(targetDir);
+    const startedAt = Date.now();
+    const output = await bashTool.execute({
+      command: `node -e "setTimeout(() => console.log('done'), 500)"`,
+      timeout: 50,
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(300);
+    expect(output).toContain('Exit code');
+
+    const timeoutError = new Error(output) as Error & { code?: string };
+    timeoutError.code = 'ETIMEDOUT';
+
+    const handler = new ExceptionHandler(new Logger(resolve(metaDir, 'meta_logs'), 'exception'), undefined, resolve(metaDir, 'meta_logs'));
+    const result = await handler.handle(timeoutError, HarnessState.DEV, 'bash');
+
+    expect(result.action).toBe('retry');
+    expect(result.healed).toBe(true);
+    expect(result.record.level).toBe(ExceptionLevel.P3);
   });
 
   it('EXC_UNIT_013 requires manual intervention actions to leave audit records', async () => {
@@ -185,47 +209,79 @@ describe('M07 exception handling and M08 metrics', () => {
     expect(existsSync(resolve(metaDir, 'audit', 'manual_interventions.jsonl'))).toBe(true);
   });
 
-  it('MET_UNIT_001 reports requirement coverage in the delivery summary', () => {
+  it('MET_UNIT_001 reports quantitative quality metrics for successful sprint delivery', () => {
     const { targetDir } = useFixture();
     const metrics = new MetricsCollector(new Logger(resolve(targetDir, 'project_logs'), 'metrics'));
+
+    metrics.recordEvaluationScore(8);
+    metrics.startSprint('sprint-01');
+    metrics.recordSprintIteration('sprint-01');
+    metrics.endSprint('sprint-01', true);
+
     const report = metrics.generateReport(targetDir);
-    expect(report).toContain('需求覆盖率');
+
+    expect(metrics.getMetrics().averageEvaluationScore).toBe(8);
+    expect(metrics.getMetrics().firstPassRate).toBe(100);
+    expect(report).toContain('| Sprint验收平均分 | 8.0 | >=7 | 达标 |');
+    expect(report).toContain('| Sprint一次通过率 | 100.0% | >=80% | 达标 |');
   });
 
-  it('MET_UNIT_002 reports blocking bug and security-vulnerability status in the final metrics report', () => {
+  it('MET_UNIT_002 reports exception totals, self-heal rate, and upgrade count numerically', () => {
     const { targetDir } = useFixture();
     const metrics = new MetricsCollector(new Logger(resolve(targetDir, 'project_logs'), 'metrics'));
+
+    metrics.recordException('P2', false, false);
+    metrics.recordException('P3', true, true);
+
     const report = metrics.generateReport(targetDir);
-    expect(report).toContain('阻断性bug数量');
-    expect(report).toContain('高危安全漏洞数');
+
+    expect(metrics.getMetrics().totalExceptions).toBe(2);
+    expect(metrics.getMetrics().selfHealedExceptions).toBe(1);
+    expect(metrics.getMetrics().exceptionUpgrades).toBe(1);
+    expect(report).toContain('| 总异常数 | 2 | - | - |');
+    expect(report).toContain('| 异常自愈率 | 50.0% | >=95% | 未达标 |');
+    expect(report).toContain('| 异常升级次数 | 1 | - | - |');
   });
 
-  it('MET_UNIT_003 reports code-style compliance and unit-test coverage goals', () => {
-    const { targetDir } = useFixture();
-    const metrics = new MetricsCollector(new Logger(resolve(targetDir, 'project_logs'), 'metrics'));
-    const report = metrics.generateReport(targetDir);
-    expect(report).toContain('代码规范合规率');
-    expect(report).toContain('单元测试覆盖率');
-  });
-
-  it('MET_UNIT_004 reports manual intervention and isolation compliance signals', () => {
+  it('MET_UNIT_003 reports isolation compliance with real checks and violations', () => {
     const { metaDir, targetDir } = useFixture();
     const metrics = new MetricsCollector(new Logger(resolve(targetDir, 'project_logs'), 'metrics'));
     const monitor = new IsolationMonitor(metaDir, targetDir, new Logger(resolve(metaDir, 'meta_logs'), 'iso'));
+
     monitor.verifyIsolation();
+    expect(() => monitor.validateNotMetaPath(resolve(metaDir, 'src/internal.ts'))).toThrow();
     metrics.updateIsolationMetrics(monitor);
+
     const report = metrics.generateReport(targetDir);
-    expect(report).toContain('双仓隔离合规率');
-    expect(report).toContain('跨仓违规操作次数');
+
+    expect(metrics.getMetrics().isolationChecks).toBe(2);
+    expect(metrics.getMetrics().isolationViolations).toBe(1);
+    expect(metrics.getMetrics().isolationComplianceRate).toBe(50);
+    expect(report).toContain('| 双仓隔离合规率 | 50.0% | 100% | 未达标 |');
+    expect(report).toContain('| 跨仓违规操作次数 | 1 | 0次 | 未达标 |');
   });
 
-  it('MET_UNIT_005 lists delivery artifacts such as usage docs and reports', () => {
+  it('MET_UNIT_004 persists the generated summary report and lists delivery evidence paths', () => {
     const { targetDir } = useFixture();
     const metrics = new MetricsCollector(new Logger(resolve(targetDir, 'project_logs'), 'metrics'));
     const report = metrics.generateReport(targetDir);
+
+    expect(existsSync(resolve(targetDir, 'docs/report/project_summary_report.md'))).toBe(true);
     expect(report).toContain('项目全流程总结报告');
     expect(report).toContain('docs/report/final_acceptance_report.md');
     expect(report).toContain('README.md');
+  });
+
+  it('MET_UNIT_005 keeps requirement and security coverage guidance in the summary report', () => {
+    const { targetDir } = useFixture();
+    const metrics = new MetricsCollector(new Logger(resolve(targetDir, 'project_logs'), 'metrics'));
+    const report = metrics.generateReport(targetDir);
+
+    expect(report).toContain('需求覆盖率');
+    expect(report).toContain('阻断性bug数量');
+    expect(report).toContain('代码规范合规率');
+    expect(report).toContain('单元测试覆盖率');
+    expect(report).toContain('高危安全漏洞数');
   });
 
   it('MET_UNIT_006 auto-collects isolation, quality, automation, cost, and resilience metrics', () => {

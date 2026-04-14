@@ -1,3 +1,11 @@
+/**
+ * M01 铁律 / M02 边界定义 — 测试分类: behavioral
+ *
+ * 验证意图：覆盖框架不可违反的核心约束（iron rules）和系统边界。
+ * 包括：Agent 职责隔离、结构化产物交接、无状态会话、Git 回滚可追溯性、
+ * 评估硬阈值、人工介入审计、沙箱隔离、受保护分支、状态机门禁。
+ * 所有测试均为运行时行为测试，无源码字符串静态断言。
+ */
 import { readFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
@@ -11,9 +19,10 @@ import { ManualIntervention } from '../src/orchestrator/manual-intervention.js';
 import { PlannerAgent } from '../src/agents/planner.js';
 import { GeneratorAgent } from '../src/agents/generator.js';
 import { EvaluatorAgent } from '../src/agents/evaluator.js';
+import { Harness } from '../src/orchestrator/harness.js';
 import { RollbackManager, RollbackLevel } from '../src/orchestrator/rollback.js';
 import type { LLMMessage } from '../src/types.js';
-import { createWorkspaceFixture, gitLogMessages, HARNESS_ROOT, readHarnessFile } from './helpers/fixtures.js';
+import { createWorkspaceFixture, gitLogMessages, HARNESS_ROOT, initPlainGitRepo } from './helpers/fixtures.js';
 
 const fixtures: Array<{ cleanup: () => void }> = [];
 afterEach(() => {
@@ -26,6 +35,71 @@ function useFixture() {
   const fixture = createWorkspaceFixture();
   fixtures.push(fixture);
   return fixture;
+}
+
+function makeHarnessConfig(rootDir: string, metaDir: string, targetDir: string) {
+  return {
+    version: '0.1.0',
+    llm: {
+      baseURL: 'http://localhost:1234',
+      apiKey: 'test-key',
+      apiKeyEnvVar: 'TEST_API_KEY',
+      model: 'test-model',
+      maxTokens: 2048,
+      temperature: 0,
+    },
+    thresholds: {
+      maxRetries: 2,
+      maxSprintIterations: 2,
+      maxRollbacks: 1,
+      maxNegotiationRounds: 2,
+      evaluationPassScore: 7,
+      evaluationMinDimensionScore: 6,
+    },
+    paths: {
+      workspaceRoot: rootDir,
+      ideaFile: resolve(targetDir, 'idea.md'),
+      targetProject: targetDir,
+      metaLogs: resolve(metaDir, 'meta_logs'),
+    },
+  };
+}
+
+function makeReviewReport({
+  average,
+  scores,
+}: {
+  average: number;
+  scores: Record<string, number>;
+}): string {
+  return `# Review Report
+
+## 验收基本信息
+- Sprint ID: sprint-01
+- Reviewer: evaluator-01
+
+## 评分
+- 功能完整性: ${scores['功能完整性']}
+- 代码质量: ${scores['代码质量']}
+- 可运行性: ${scores['可运行性']}
+- 可测试性: ${scores['可测试性']}
+- 安全性: ${scores['安全性']}
+
+## 整体加权平均分
+${average}
+
+## 问题清单
+- ISSUE-001 src/index.ts:1 root cause: missing guard fix suggestion: add validation guard
+
+## 修复要求
+- fix ISSUE-001
+
+## 验收结果
+通过
+
+## 验收人签字
+- evaluator-01 @ 2026-04-08T00:00:00.000Z
+`;
 }
 
 describe('M01 iron rules and M02 boundary definitions', () => {
@@ -154,14 +228,49 @@ describe('M01 iron rules and M02 boundary definitions', () => {
   });
 
   it('IRON_UNIT_006 keeps the hard evaluation thresholds at min-dimension 6 and average 7', () => {
+    const { rootDir, metaDir, targetDir } = useFixture();
     const config = JSON.parse(readFileSync(resolve(HARNESS_ROOT, 'harness_config.json'), 'utf-8')) as {
       thresholds: { evaluationPassScore: number; evaluationMinDimensionScore: number };
     };
-    const evaluator = readHarnessFile('src/agents/evaluator.ts');
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
+
+    const passingReport = makeReviewReport({
+      average: 7,
+      scores: {
+        功能完整性: 7,
+        代码质量: 7,
+        可运行性: 7,
+        可测试性: 7,
+        安全性: 7,
+      },
+    });
+    const lowDimensionReport = makeReviewReport({
+      average: 7.4,
+      scores: {
+        功能完整性: 5,
+        代码质量: 8,
+        可运行性: 8,
+        可测试性: 8,
+        安全性: 8,
+      },
+    });
+    const lowAverageReport = makeReviewReport({
+      average: 6.9,
+      scores: {
+        功能完整性: 7,
+        代码质量: 7,
+        可运行性: 7,
+        可测试性: 7,
+        安全性: 7,
+      },
+    });
+
     expect(config.thresholds.evaluationPassScore).toBe(7);
     expect(config.thresholds.evaluationMinDimensionScore).toBe(6);
-    expect(evaluator).toContain('任何维度 < 6分');
-    expect(evaluator).toContain('整体加权平均分 < 7分');
+    expect((harness as any).checkEvaluationPassed(passingReport)).toBe(true);
+    expect((harness as any).checkEvaluationPassed(lowDimensionReport)).toBe(false);
+    expect((harness as any).checkEvaluationPassed(lowAverageReport)).toBe(false);
   });
 
   it('IRON_UNIT_007 records manual intervention with git audit and structured logs', async () => {
@@ -181,11 +290,36 @@ describe('M01 iron rules and M02 boundary definitions', () => {
   });
 
   it('IRON_UNIT_008 routes reverse architecture feedback through the orchestrator modules', () => {
-    const feedback = readHarnessFile('src/orchestrator/feedback.ts');
-    const harness = readHarnessFile('src/orchestrator/harness.ts');
-    expect(feedback).toContain('submitFeedback');
-    expect(feedback).toContain('ArchitectureFeedback');
-    expect(harness).toContain('FeedbackChannel');
+    const { rootDir, metaDir, targetDir } = useFixture();
+    const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
+    (harness as any).initInfrastructure();
+
+    const feedbackChannel = (harness as any).feedbackChannel;
+    const reviewReport = `${makeReviewReport({
+      average: 7.8,
+      scores: {
+        功能完整性: 8,
+        代码质量: 8,
+        可运行性: 8,
+        可测试性: 8,
+        安全性: 8,
+      },
+    })}
+
+## 架构反馈
+- 严重 API 边界耦合导致后续 Sprint 扩展困难
+- 需要修改架构
+`;
+
+    const feedback = feedbackChannel.parseFromEvaluationReport(reviewReport, 'sprint-01');
+    expect(feedback).not.toBeNull();
+    expect(feedbackChannel.getPendingFeedback()).toHaveLength(0);
+
+    feedbackChannel.submitFeedback(feedback);
+
+    expect(feedbackChannel.getPendingFeedback()).toHaveLength(1);
+    expect(feedbackChannel.hasCriticalFeedback()).toBe(true);
+    expect(existsSync(resolve(targetDir, 'docs/sprint/architecture_feedback_sprint-01.md'))).toBe(true);
   });
 
   it('IRON_UNIT_009 restricts tool execution to the target sandbox and blocks dangerous commands', async () => {
@@ -402,17 +536,25 @@ describe('M01 iron rules and M02 boundary definitions', () => {
     expect(targetGitignore).toContain('node_modules/');
   });
 
-  it('DEF_UNIT_009 keeps local config overrides and runtime artifacts out of the published repository', () => {
-    const metaGitignore = readFileSync(resolve(HARNESS_ROOT, '.gitignore'), 'utf-8');
-    const configSource = readHarnessFile('src/config.ts');
+  it('DEF_UNIT_009 keeps local config overrides and runtime artifacts out of the published repository', async () => {
+    const { metaDir } = useFixture();
+    await initPlainGitRepo(metaDir);
 
-    expect(metaGitignore).toContain('harness_config.local.json');
-    expect(metaGitignore).toContain('harness_secrets.local.json');
-    expect(metaGitignore).toContain('audit/');
-    expect(metaGitignore).toContain('checkpoints/');
-    expect(configSource).toContain('harness_config.local.json');
-    expect(configSource).toContain('harness_secrets.local.json');
-    expect(configSource).toContain('Plaintext API keys are prohibited in config files');
+    writeFileSync(resolve(metaDir, '.gitignore'), readFileSync(resolve(HARNESS_ROOT, '.gitignore'), 'utf-8'), 'utf-8');
+    writeFileSync(resolve(metaDir, 'harness_config.local.json'), '{"thresholds":{"maxRetries":9}}', 'utf-8');
+    writeFileSync(resolve(metaDir, 'harness_secrets.local.json'), '{"llm":{"apiKey":"secret"}}', 'utf-8');
+    mkdirSync(resolve(metaDir, 'audit'), { recursive: true });
+    mkdirSync(resolve(metaDir, 'checkpoints'), { recursive: true });
+    writeFileSync(resolve(metaDir, 'audit', 'manual_interventions.jsonl'), '{"id":"MI-001"}\n', 'utf-8');
+    writeFileSync(resolve(metaDir, 'checkpoints', 'latest.json'), '{"phase":"PLANNING"}', 'utf-8');
+
+    const bashTool = new BashTool(metaDir);
+    const ignoredStatus = await bashTool.execute({ command: 'git status --ignored --short' });
+
+    expect(ignoredStatus).toContain('!! harness_config.local.json');
+    expect(ignoredStatus).toContain('!! harness_secrets.local.json');
+    expect(ignoredStatus).toContain('!! audit/');
+    expect(ignoredStatus).toContain('!! checkpoints/');
   });
 
   it('DEF_INT_001 preserves core definitions after normal operations', async () => {

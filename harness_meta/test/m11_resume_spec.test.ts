@@ -140,16 +140,19 @@ describe('M11 checkpoint resume hardening', () => {
     expect(manager.getAll().length).toBe(0);
   });
 
-  it('RESUME_UNIT_004 resume from sprint sub-state skips completed top-level phases but does not skip FINAL_ACCEPTANCE', () => {
+  it('RESUME_UNIT_004 resume from sprint sub-state skips completed top-level phases but does NOT skip SPRINT_DISPATCH (sprint loop must run for sub-state resume)', () => {
     const { rootDir, metaDir, targetDir } = useFixture();
     const harness = new Harness(makeHarnessConfig(rootDir, metaDir, targetDir));
     (harness as any).initInfrastructure();
 
+    // Pre-sprint phases should be skipped when resuming from a sprint sub-state
     expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.META_INIT)).toBe(true);
     expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.PROJECT_INIT)).toBe(true);
     expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.REQUIREMENT_PARSE)).toBe(true);
     expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.PLANNING)).toBe(true);
-    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.SPRINT_DISPATCH)).toBe(true);
+    // SPRINT_DISPATCH must NOT be skipped — the sprint loop needs to run to handle sub-state resume
+    expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.SPRINT_DISPATCH)).toBe(false);
+    // Post-sprint phases should not be skipped
     expect((harness as any).shouldSkipPhase(HarnessState.DEV, HarnessState.FINAL_ACCEPTANCE)).toBe(false);
   });
 

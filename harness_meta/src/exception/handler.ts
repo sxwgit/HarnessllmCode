@@ -418,6 +418,8 @@ export class ExceptionHandler {
   private analyzeRootCause(error: Error): string {
     const msg = error.message;
     if (msg.includes('API error')) return 'llm_api_failure';
+    if (msg.includes('fetch failed')) return 'llm_api_failure';
+    if (msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND') || msg.includes('ETIMEDOUT')) return 'llm_api_failure';
     if (msg.includes('not found')) return 'file_or_resource_missing';
     if (msg.includes('permission')) return 'permission_denied';
     if (msg.includes('timeout')) return 'operation_timeout';

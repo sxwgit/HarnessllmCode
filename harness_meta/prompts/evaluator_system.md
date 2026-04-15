@@ -65,7 +65,9 @@
 
 使用 file_write 工具将验收报告写入目标项目的 `docs/sprint/review_report_{sprint_id}.md`（path 参数即为 `docs/sprint/review_report_{sprint_id}.md`，这是相对于目标项目根目录的路径）。
 
-报告内容格式如下：
+报告必须包含两部分：Markdown 正文（人类可读）和 JSON 数据块（机器解析）。
+
+### Markdown 正文格式：
 
 ```
 # Sprint验收评审报告 {sprint_id}
@@ -86,3 +88,41 @@
 
 ## 修复要求 (如不通过)
 ```
+
+### JSON 数据块（必须包含）：
+
+在 Markdown 正文末尾，必须包含一个 ```json 代码块，严格遵循以下格式：
+
+```json
+{
+  "sprintId": "sprint-01",
+  "passed": true,
+  "scores": [
+    { "dimension": "功能完整性", "weight": 0.35, "score": 8, "maxScore": 10, "notes": "所有功能点已实现" },
+    { "dimension": "代码质量与架构合规性", "weight": 0.25, "score": 8, "maxScore": 10, "notes": "符合架构设计" },
+    { "dimension": "可运行性与稳定性", "weight": 0.20, "score": 8, "maxScore": 10, "notes": "编译通过运行正常" },
+    { "dimension": "可测试性与文档完整性", "weight": 0.10, "score": 8, "maxScore": 10, "notes": "核心测试覆盖" },
+    { "dimension": "代码安全性", "weight": 0.10, "score": 8, "maxScore": 10, "notes": "无安全漏洞" }
+  ],
+  "weightedAverage": 8.0,
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "severity": "normal",
+      "file": "src/index.ts",
+      "line": 42,
+      "description": "缺少错误处理",
+      "rootCause": "入口函数未对参数缺失场景做校验导致运行时可能抛出未捕获异常",
+      "fixSuggestion": "在 CLI 入口添加 try-catch 包裹并对 argv 做基础校验后给出友好错误提示"
+    }
+  ]
+}
+```
+
+注意：
+- dimension 名称必须使用以下 5 个精确名称：功能完整性、代码质量与架构合规性、可运行性与稳定性、可测试性与文档完整性、代码安全性
+- severity 只能是：blocking / critical / normal / minor
+- rootCause 至少 15 字符，必须描述具体技术原因
+- fixSuggestion 至少 15 字符，必须包含具体动作动词（添加/修改/删除/重构/修复 等）
+- passed 字段必须与 Markdown 中"验收结果"一致
+- weightedAverage 必须是加权计算结果，不是简单平均

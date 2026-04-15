@@ -2,22 +2,22 @@ import { z } from 'zod';
 
 // ============ Standard Requirement ============
 export const StandardRequirementSchema = z.object({
-  projectName: z.string(),
-  overview: z.string(),
+  projectName: z.string().min(1, 'projectName must not be empty'),
+  overview: z.string().min(20, 'overview must have at least 20 characters for developable detail'),
   coreFeatures: z.array(z.object({
     id: z.string(),
     name: z.string(),
-    description: z.string(),
+    description: z.string().min(10, 'feature description must have at least 10 chars'),
     priority: z.enum(['P0', 'P1', 'P2']),
-  })),
+  })).min(1, 'must have at least one core feature'),
   techStack: z.object({
-    runtime: z.string(),
-    language: z.string(),
+    runtime: z.string().min(1),
+    language: z.string().min(1),
     frameworks: z.array(z.string()),
     dependencies: z.array(z.string()),
   }),
-  constraints: z.array(z.string()).optional(),
-  outOfScope: z.array(z.string()).optional(),
+  constraints: z.array(z.string().min(3, 'each constraint must be specific (min 3 chars)')).optional(),
+  outOfScope: z.array(z.string().min(3, 'each out-of-scope item must be specific (min 3 chars)')).optional(),
 });
 
 // ============ Product Spec ============

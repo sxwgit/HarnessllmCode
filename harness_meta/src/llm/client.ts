@@ -302,11 +302,14 @@ export class LLMClient {
   }
 
   /**
-   * Fetch with automatic retry for transient errors (429, 503, 500) and timeout
+   * Fetch with automatic retry for transient errors (429, 503, 500) and timeout.
+   * Network-level errors (TypeError: fetch failed) use longer delays with jitter.
    */
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
     let lastError: Error | null = null;
     const timeoutMs = 300_000; // 5 minute timeout per request
+    const networkErrorBaseDelay = 3000; // Longer base delay for network-level errors
+
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -327,7 +330,11 @@ export class LLMClient {
           lastError = new Error(`LLM API request timed out after ${timeoutMs / 1000}s`);
         }
         if (attempt < this.maxRetries - 1) {
-          const delay = this.retryDelayMs * Math.pow(2, attempt);
+          const isNetworkError = err instanceof TypeError || (err instanceof Error && err.message.includes('fetch failed'));
+          const baseDelay = isNetworkError ? networkErrorBaseDelay : this.retryDelayMs;
+          // Add jitter (0.5x to 1.5x) to avoid thundering herd on shared APIs
+          const jitter = 0.5 + Math.random();
+          const delay = Math.round(baseDelay * Math.pow(2, attempt) * jitter);
           await new Promise(r => setTimeout(r, delay));
         }
       }

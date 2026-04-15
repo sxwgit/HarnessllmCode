@@ -40,3 +40,24 @@ export function normalizedIncludes(
   if (normalizedNeedle === '') return true;
   return normalizedHaystack.includes(normalizedNeedle);
 }
+
+/**
+ * Extract the first ```json code block from content and parse it as an object.
+ * Returns null if no valid JSON block is found.
+ *
+ * This is the canonical JSON extraction method shared across the framework.
+ */
+export function extractJsonBlock(content: string): Record<string, unknown> | null {
+  const jsonMatch = content.match(/```json\s*\n([\s\S]*?)\n```/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Not valid JSON — fall through
+    }
+  }
+  return null;
+}

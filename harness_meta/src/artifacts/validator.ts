@@ -9,11 +9,16 @@ import {
   SprintContractSchema,
   ReviewReportSchema,
 } from './schemas.js';
-import { normalizedIncludes } from './text-normalizer.js';
+import { normalizedIncludes, extractJsonBlock } from './text-normalizer.js';
 import {
   SPRINT_CONTRACT_REQUIRED_SECTIONS,
   REVIEW_REPORT_REQUIRED_SECTIONS,
   EVALUATION_DIMENSIONS,
+  VAGUE_CONSTRAINT_PATTERNS,
+  VAGUE_OUT_OF_SCOPE_PATTERNS,
+  GENERIC_ROOT_CAUSE_PATTERNS,
+  ACTION_VERB_PATTERNS,
+  VALID_SEVERITY_LEVELS,
   matchAnyKeyword,
   dimensionAlternation,
   dimensionNormalizedAlternation,
@@ -252,24 +257,55 @@ export class ArtifactValidator {
         const requirement = this.extractStructuredData(content, 'StandardRequirement') as {
           projectName?: string;
           overview?: string;
-          coreFeatures?: unknown[];
+          coreFeatures?: Array<{ description?: string }>;
           techStack?: { runtime?: string; language?: string };
+          constraints?: string[];
+          outOfScope?: string[];
         };
 
         if (!requirement.projectName || requirement.projectName === 'unknown') {
           errors.push('Standard requirement must define an explicit project name');
         }
-        if (!requirement.overview || requirement.overview.trim().length < 10) {
-          errors.push('Standard requirement must define a concrete project overview');
+        if (!requirement.overview || requirement.overview.trim().length < 20) {
+          errors.push('Standard requirement must define a project overview with at least 20 characters of developable detail');
         }
         if (!Array.isArray(requirement.coreFeatures) || requirement.coreFeatures.length === 0) {
           errors.push('Standard requirement must define at least one core feature');
+        } else {
+          // Validate each feature description has enough detail
+          for (let i = 0; i < requirement.coreFeatures.length; i++) {
+            const desc = requirement.coreFeatures[i].description;
+            if (!desc || desc.trim().length < 10) {
+              errors.push(`Core feature ${i + 1} description must have at least 10 characters of implementable detail`);
+            }
+          }
         }
         if (!requirement.techStack?.runtime || !requirement.techStack?.language) {
           errors.push('Standard requirement must define concrete tech stack constraints');
         }
-        if (!this.extractSection(content, '不做范围') && !this.extractSection(content, '需求边界')) {
+        // Accept out-of-scope either as a markdown section or as structured JSON data
+        const hasMarkdownScope = this.extractSection(content, '不做范围') || this.extractSection(content, '需求边界');
+        const hasJsonScope = Array.isArray(requirement.outOfScope) && requirement.outOfScope.length > 0;
+        if (!hasMarkdownScope && !hasJsonScope) {
           errors.push('Standard requirement must define an explicit out-of-scope section');
+        }
+
+        // Batch 6: Validate constraints are not vague
+        if (Array.isArray(requirement.constraints)) {
+          for (const c of requirement.constraints) {
+            if (VAGUE_CONSTRAINT_PATTERNS.some(p => p.test(c.trim()))) {
+              errors.push(`Constraint "${c}" is too vague — must reference a specific capability, metric, or rule`);
+            }
+          }
+        }
+
+        // Batch 6: Validate out-of-scope items are specific
+        if (Array.isArray(requirement.outOfScope)) {
+          for (const item of requirement.outOfScope) {
+            if (VAGUE_OUT_OF_SCOPE_PATTERNS.some(p => p.test(item.trim()))) {
+              errors.push(`Out-of-scope item "${item}" is too vague — must reference a concrete capability or module`);
+            }
+          }
         }
         break;
       }
@@ -340,6 +376,7 @@ export class ArtifactValidator {
           passed?: boolean;
           issues?: Array<{
             id?: string;
+            severity?: string;
             file?: string;
             line?: number;
             rootCause?: string;
@@ -367,11 +404,18 @@ export class ArtifactValidator {
           if (!issue.file || issue.line === undefined) {
             errors.push(`Review issue ${issueId} must include a concrete file path and line number`);
           }
-          if (!issue.rootCause || issue.rootCause.trim().length < 8) {
-            errors.push(`Review issue ${issueId} must include an explicit root cause`);
+          if (!issue.rootCause || issue.rootCause.trim().length < 15) {
+            errors.push(`Review issue ${issueId} must include an explicit root cause with at least 15 characters`);
+          } else if (GENERIC_ROOT_CAUSE_PATTERNS.some(p => p.test(issue.rootCause!.trim()))) {
+            errors.push(`Review issue ${issueId} root cause is too generic ("${issue.rootCause}") — must describe the specific technical reason`);
           }
-          if (!issue.fixSuggestion || issue.fixSuggestion.trim().length < 8) {
-            errors.push(`Review issue ${issueId} must include a concrete fix suggestion`);
+          if (!issue.fixSuggestion || issue.fixSuggestion.trim().length < 15) {
+            errors.push(`Review issue ${issueId} must include a concrete fix suggestion with at least 15 characters`);
+          } else if (!ACTION_VERB_PATTERNS.some(p => p.test(issue.fixSuggestion!))) {
+            errors.push(`Review issue ${issueId} fix suggestion lacks action verbs — must describe a concrete implementation action`);
+          }
+          if (issue.severity && !VALID_SEVERITY_LEVELS.includes(issue.severity as typeof VALID_SEVERITY_LEVELS[number])) {
+            errors.push(`Review issue ${issueId} has invalid severity "${issue.severity}" — must be one of: ${VALID_SEVERITY_LEVELS.join(', ')}`);
           }
         }
         break;
@@ -393,6 +437,29 @@ export class ArtifactValidator {
     scores: Array<{ dimension: string; score: number }>;
     weightedAverage: number;
   } {
+    // Priority 1: Try JSON block extraction directly (bypasses heuristic Markdown parsing)
+    const jsonBlock = extractJsonBlock(content);
+    if (jsonBlock && typeof jsonBlock.sprintId === 'string' && Array.isArray(jsonBlock.scores) && jsonBlock.scores.length >= 5) {
+      const scores = (jsonBlock.scores as Array<Record<string, unknown>>).map(s => ({
+        dimension: String(s.dimension ?? ''),
+        score: typeof s.score === 'number' ? s.score : 0,
+      }));
+      // Validate that we have all 5 dimensions
+      const dimensionNames = EVALUATION_DIMENSIONS.map(d => d.canonical);
+      const allPresent = dimensionNames.every(name =>
+        scores.some(s => s.dimension === name),
+      );
+      if (allPresent) {
+        return {
+          sprintId: jsonBlock.sprintId,
+          passed: typeof jsonBlock.passed === 'boolean' ? jsonBlock.passed : false,
+          scores,
+          weightedAverage: typeof jsonBlock.weightedAverage === 'number' ? jsonBlock.weightedAverage : NaN,
+        };
+      }
+    }
+
+    // Priority 2: Fall back to full structured data extraction (JSON block → heuristic)
     const raw = this.extractStructuredData(content, 'ReviewReport') as {
       sprintId?: string;
       passed?: boolean;
@@ -409,11 +476,45 @@ export class ArtifactValidator {
   }
 
   /**
+   * Extract and validate artifact data, returning a strongly-typed validated object.
+   * Returns null if the file doesn't exist, can't be extracted, or fails Zod validation.
+   */
+  validateAndExtract<T>(filePath: string, schema: import('zod').ZodType<T>): T | null {
+    if (!existsSync(filePath)) return null;
+
+    const content = readFileSync(filePath, 'utf-8');
+    const fileName = filePath.split('/').pop() || '';
+    const artifactType = this.normalizeArtifactType(fileName);
+    const artifactNameMap: Record<string, string> = {
+      'standard_requirement.md': 'StandardRequirement',
+      'product_spec.md': 'ProductSpec',
+      'architecture_design.md': 'ArchitectureDesign',
+      'sprint_plan.md': 'SprintPlan',
+    };
+    const artifactName = artifactNameMap[artifactType] || '';
+    if (!artifactName) return null;
+
+    const extracted = this.extractStructuredData(content, artifactName);
+    try {
+      return schema.parse(extracted);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Extract structured data from Markdown content for Zod validation.
    * This is a heuristic extractor — it converts Markdown sections to a JS object
    * that can be validated by the Zod schemas.
    */
   private extractStructuredData(content: string, artifactName: string): Record<string, unknown> {
+    // Priority 1: Try extracting an embedded JSON code block
+    const jsonBlock = extractJsonBlock(content);
+    if (jsonBlock && typeof jsonBlock === 'object') {
+      return jsonBlock;
+    }
+
+    // Priority 2: Fall back to heuristic Markdown extraction
     switch (artifactName) {
       case 'StandardRequirement': {
         // Extract basic fields from requirement doc
@@ -472,41 +573,24 @@ export class ArtifactValidator {
           || this.extractSection(content, '技术选型')
           || '';
 
-        const layers = this.extractListStrings(content, '架构层次').length > 0
-          ? this.extractListStrings(content, '架构层次').map(item => ({
-              name: item.split(/[:：]/)[0]?.trim() || item,
-              responsibility: item.split(/[:：]/).slice(1).join(':').trim() || item,
-              components: [],
-            }))
-          : this.extractListStrings(content, '分层架构').map(item => ({
-              name: item.split(/[:：]/)[0]?.trim() || item,
-              responsibility: item.split(/[:：]/).slice(1).join(':').trim() || item,
-              components: [],
-            }));
+        const layers = this.extractNamedEntries(content, ['架构层次', '分层架构', '系统分层']).map(e => ({
+          name: e.name,
+          responsibility: e.responsibility,
+          components: [] as string[],
+        }));
 
-        const coreModules = this.extractListStrings(content, '核心模块').length > 0
-          ? this.extractListStrings(content, '核心模块').map(item => ({
-              name: item.split(/[:：]/)[0]?.trim() || item,
-              responsibility: item.split(/[:：]/).slice(1).join(':').trim() || item,
-              interfaces: [],
-              dependencies: [],
-            }))
-          : this.extractListStrings(content, '模块设计').map(item => ({
-              name: item.split(/[:：]/)[0]?.trim() || item,
-              responsibility: item.split(/[:：]/).slice(1).join(':').trim() || item,
-              interfaces: [],
-              dependencies: [],
-            }));
+        const coreModules = this.extractNamedEntries(content, ['核心模块', '模块设计', '模块划分']).map(e => ({
+          name: e.name,
+          responsibility: e.responsibility,
+          interfaces: [] as string[],
+          dependencies: [] as string[],
+        }));
 
-        const dataModels = this.extractListStrings(content, '数据模型').length > 0
-          ? this.extractListStrings(content, '数据模型').map(item => ({
-              name: item.split(/[:：]/)[0]?.trim() || item,
-              fields: [],
-            }))
-          : this.extractListStrings(content, '数据结构').map(item => ({
-              name: item.split(/[:：]/)[0]?.trim() || item,
-              fields: [],
-            }));
+        // Extract data models from multiple possible formats:
+        // 1. List items: "- ModelName: description"
+        // 2. Sub-headings: "### ModelName" or "#### ModelName" under the data model section
+        // 3. Table rows: "| ModelName | ... |"
+        const dataModels = this.extractDataModels(content);
 
         const techItems = techSection.split('\n').map(l => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean);
         const runtime = techItems.find(i => /runtime|运行时/i.test(i))?.split(/[:：]/).slice(1).join(':').trim() || '';
@@ -612,6 +696,12 @@ export class ArtifactValidator {
     }
   }
 
+  /**
+   * Try to extract a JSON code block from Markdown content.
+   * LLM-generated documents sometimes include ```json blocks that contain
+   * structured data matching our schemas. Extract and parse these first.
+   * Returns null if no valid JSON block is found.
+   */
   /**
    * Extract text content from a Markdown section
    */
@@ -941,6 +1031,132 @@ export class ArtifactValidator {
 
   private hasHeading(content: string, heading: string): boolean {
     return new RegExp(`^#{1,4}\\s+.*${heading}.*$`, 'm').test(content);
+  }
+
+  /**
+   * Extract named entries (layers, modules, etc.) from a section, supporting
+   * list items, sub-headings, and table rows — same multi-format strategy
+   * as extractDataModels.
+   */
+  private extractNamedEntries(content: string, sectionHints: string[]): Array<{ name: string; responsibility: string; components: string[] }> {
+    for (const hint of sectionHints) {
+      const listItems = this.extractListStrings(content, hint);
+      if (listItems.length > 0) {
+        return listItems.map(item => ({
+          name: item.split(/[:：]/)[0]?.trim() || item,
+          responsibility: item.split(/[:：]/).slice(1).join(':').trim() || item,
+          components: [],
+        }));
+      }
+    }
+
+    // Fallback: sub-headings
+    for (const hint of sectionHints) {
+      const section = this.extractSection(content, hint);
+      if (!section) continue;
+
+      const entries: Array<{ name: string; responsibility: string; components: string[] }> = [];
+      const subHeadingRegex = /^#{3,6}\s+(.+)$/gm;
+      let match: RegExpExecArray | null;
+      while ((match = subHeadingRegex.exec(section)) !== null) {
+        const name = match[1].trim();
+        if (name) entries.push({ name, responsibility: name, components: [] });
+      }
+      if (entries.length > 0) return entries;
+
+      // Fallback: table rows
+      const tableRowRegex = /^\|(.+)\|$/gm;
+      let tableMatch: RegExpExecArray | null;
+      while ((tableMatch = tableRowRegex.exec(section)) !== null) {
+        const row = tableMatch[1];
+        if (/^[\s\-:|]+$/.test(row)) continue;
+        const cells = row.split('|').map(c => c.replace(/\*\*/g, '').trim()).filter(Boolean);
+        if (cells.length > 0) {
+          entries.push({ name: cells[0], responsibility: cells.slice(1).join(', ') || cells[0], components: [] });
+        }
+      }
+      if (entries.length > 0) return entries;
+    }
+
+    return [];
+  }
+
+  /**
+   * Extract data models from the "数据模型" or "数据结构" section, supporting
+   * three common LLM output formats:
+   *   1. List items:      "- ModelName: description"
+   *   2. Sub-headings:    "### ModelName" or "#### ModelName"
+   *   3. Markdown tables: "| ModelName | ... |"
+   */
+  private extractDataModels(content: string): Array<{ name: string; fields: Array<{ name: string; type: string; description: string }> }> {
+    // Try list-item format first (ideal format per prompt instructions)
+    const sectionHints = ['数据模型', '数据结构'];
+    for (const hint of sectionHints) {
+      const listModels = this.extractListStrings(content, hint);
+      if (listModels.length > 0) {
+        return listModels.map(item => ({
+          name: item.split(/[:：]/)[0]?.trim() || item,
+          fields: [],
+        }));
+      }
+    }
+
+    // Fallback: parse sub-headings (### or ####) inside the data model section
+    for (const hint of sectionHints) {
+      const section = this.extractSection(content, hint);
+      if (!section) continue;
+
+      const subHeadingModels: Array<{ name: string; fields: Array<{ name: string; type: string; description: string }> }> = [];
+      const subHeadingRegex = /^#{3,6}\s+(.+)$/gm;
+      let match: RegExpExecArray | null;
+      while ((match = subHeadingRegex.exec(section)) !== null) {
+        const modelName = match[1].replace(/\s*数据模型\s*/g, '').trim();
+        if (modelName) {
+          subHeadingModels.push({ name: modelName, fields: [] });
+        }
+      }
+      if (subHeadingModels.length > 0) {
+        return subHeadingModels;
+      }
+
+      // Fallback: parse Markdown table rows
+      const tableModels: Array<{ name: string; fields: Array<{ name: string; type: string; description: string }> }> = [];
+      const tableRowRegex = /^\|(.+)\|$/gm;
+      let tableMatch: RegExpExecArray | null;
+      while ((tableMatch = tableRowRegex.exec(section)) !== null) {
+        const row = tableMatch[1];
+        // Skip separator rows like ---|---
+        if (/^[\s\-:|]+$/.test(row)) continue;
+        const cells = row.split('|').map(c => c.trim()).filter(Boolean);
+        if (cells.length > 0) {
+          tableModels.push({
+            name: cells[0].replace(/\*\*/g, '').trim(),
+            fields: [],
+          });
+        }
+      }
+      if (tableModels.length > 0) {
+        return tableModels;
+      }
+
+      // Last resort: any non-empty line that looks like a model name (word or PascalCase)
+      const lineModels: Array<{ name: string; fields: Array<{ name: string; type: string; description: string }> }> = [];
+      for (const line of section.split('\n')) {
+        const trimmed = line.trim();
+        // Skip headings and empty lines
+        if (!trimmed || /^#{1,6}\s/.test(trimmed)) continue;
+        // Match lines like "ModelName" or "**ModelName**" or "ModelName - description" or "ModelName: description"
+        const modelMatch = trimmed.match(/^\*{0,2}([A-Z][A-Za-z0-9_]+)\*{0,2}[\s:：\-—]*\S/);
+        if (modelMatch) {
+          lineModels.push({ name: modelMatch[1], fields: [] });
+        }
+      }
+      if (lineModels.length > 0) {
+        return lineModels;
+      }
+    }
+
+    return [];
   }
 
   private normalizeArtifactType(fileName: string): string {

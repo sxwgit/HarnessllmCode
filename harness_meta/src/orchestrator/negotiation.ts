@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { Logger } from '../logger/index.js';
 import { GeneratorAgent } from '../agents/generator.js';
 import { EvaluatorAgent } from '../agents/evaluator.js';
+import { extractJsonBlock } from '../artifacts/text-normalizer.js';
 import type { SprintInfo } from '../types.js';
 import { normalizedIncludes } from '../artifacts/text-normalizer.js';
 
@@ -171,7 +172,33 @@ ${this.truncate(architectureDesign, 2000)}
 6. 代码规范与架构合规要求
 7. 安全编码要求
 8. 交付物清单 (所有需要创建/修改的文件路径)
-9. 双方确认签字 (Generator智能体ID + 时间戳, Evaluator智能体ID + 时间戳, 必须在合同末尾)`;
+9. 双方确认签字 (Generator智能体ID + 时间戳, Evaluator智能体ID + 时间戳, 必须在合同末尾)
+
+## ⚠️ 机器解析 JSON 块（必须包含）
+
+合同末尾（签字之后）必须包含一个 \`\`\`json 代码块，用于机器自动解析。
+JSON 必须严格遵循以下 schema：
+
+\`\`\`json
+{
+  "sprintId": "sprint-01",
+  "goals": ["目标1", "目标2"],
+  "features": [
+    { "id": "F-001", "description": "功能描述(至少10字)", "priority": "P0", "deliverables": ["src/path/file.ts"] }
+  ],
+  "acceptanceCriteria": ["量化验收条件1", "量化验收条件2"],
+  "testCases": [
+    { "id": "TC-001", "description": "测试描述", "steps": ["步骤1"], "expectedResult": "预期结果" }
+  ],
+  "files": ["src/path/file.ts", "test/path/file.test.ts"]
+}
+\`\`\`
+
+注意：
+- JSON 块必须是合法 JSON，不要有多余注释
+- goals 不超过3个，features 每条 description 至少10字符
+- files 必须包含所有功能点涉及到的文件路径
+- 优先级只能是 P0/P1/P2`;
 
     await this.generator.run(prompt);
   }
@@ -249,52 +276,53 @@ ${concerns.map((c, i) => `${i + 1}. ${c}`).join('\n')}
   }
 
   private parseReviewPayload(response: string): NegotiationReviewPayload | null {
-    try {
-      const jsonMatch = response.match(/```json\s*([\s\S]*?)```/) ||
-        response.match(/\{[\s\S]*"agreed"[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]) as {
-          agreed?: unknown;
-          concerns?: unknown;
-        };
+    // Priority 1: Extract structured JSON block
+    const jsonObj = extractJsonBlock(response);
+    if (jsonObj && typeof jsonObj.agreed === 'boolean') {
+      const concerns = Array.isArray(jsonObj.concerns)
+        ? jsonObj.concerns.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : [];
+      this.logger.info('Negotiation: parsed from JSON block', { agreed: jsonObj.agreed, concernCount: concerns.length });
+      return { agreed: jsonObj.agreed, concerns };
+    }
 
-        if (typeof parsed.agreed === 'boolean' && Array.isArray(parsed.concerns)) {
-          const concerns = parsed.concerns.filter((item): item is string =>
-            typeof item === 'string' && item.trim().length > 0,
-          );
+    // Priority 2: Loose JSON extraction (LLM may output raw JSON without code fence)
+    try {
+      const looseMatch = response.match(/\{[\s\S]*"agreed"[\s\S]*\}/);
+      if (looseMatch) {
+        const parsed = JSON.parse(looseMatch[0]) as { agreed?: unknown; concerns?: unknown };
+        if (typeof parsed.agreed === 'boolean') {
+          const concerns = Array.isArray(parsed.concerns)
+            ? parsed.concerns.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+            : [];
+          this.logger.info('Negotiation: parsed from loose JSON', { agreed: parsed.agreed });
           return { agreed: parsed.agreed, concerns };
         }
-
-        // Handle partial JSON (agreed field present but concerns missing)
-        if (typeof parsed.agreed === 'boolean') {
-          return { agreed: parsed.agreed, concerns: [] };
-        }
       }
-
-      // Fallback: infer agreement from keyword analysis (normalized matching)
-      const positiveKeywords = ['同意', '通过', '认可', '合格', 'agree', 'approved', '可以', '没问题', '良好', '符合', '达标'];
-      const negativeKeywords = ['不同意', '不通过', '拒绝', 'reject', 'disagree', '有问题', '需要修改', '需要改进', '不符合'];
-
-      const hasPositive = positiveKeywords.some(k => normalizedIncludes(response, k, true));
-      const hasNegative = negativeKeywords.some(k => normalizedIncludes(response, k, true));
-
-      if (hasPositive && !hasNegative) {
-        this.logger.info('Negotiation: inferred agreement from keyword analysis');
-        return { agreed: true, concerns: [] };
-      }
-
-      if (hasNegative) {
-        // Extract concern-like sentences as fallback
-        const lines = response.split('\n').filter(l => l.trim().startsWith('-') || l.trim().startsWith('•') || /^\d+\./.test(l.trim()));
-        const concerns = lines.slice(0, 5).map(l => l.replace(/^[-•\d.)\s]+/, '').trim()).filter(Boolean);
-        return { agreed: false, concerns: concerns.length > 0 ? concerns : ['Evaluator raised concerns, please review and revise'] };
-      }
-
-      // Default to agreed if no clear signal (lenient approach for robustness)
-      this.logger.info('Negotiation: no clear agreement signal, defaulting to agreed');
-      return { agreed: true, concerns: [] };
     } catch {
-      return null;
+      // Loose JSON parse failed — fall through to keyword analysis
     }
+
+    // Priority 3: Keyword-based fallback
+    const positiveKeywords = ['同意', '通过', '认可', '合格', 'agree', 'approved', '可以', '没问题', '良好', '符合', '达标'];
+    const negativeKeywords = ['不同意', '不通过', '拒绝', 'reject', 'disagree', '有问题', '需要修改', '需要改进', '不符合'];
+
+    const hasPositive = positiveKeywords.some(k => normalizedIncludes(response, k, true));
+    const hasNegative = negativeKeywords.some(k => normalizedIncludes(response, k, true));
+
+    if (hasPositive && !hasNegative) {
+      this.logger.info('Negotiation: inferred agreement from keyword fallback');
+      return { agreed: true, concerns: [] };
+    }
+
+    if (hasNegative) {
+      const lines = response.split('\n').filter(l => l.trim().startsWith('-') || l.trim().startsWith('•') || /^\d+\./.test(l.trim()));
+      const concerns = lines.slice(0, 5).map(l => l.replace(/^[-•\d.)\s]+/, '').trim()).filter(Boolean);
+      return { agreed: false, concerns: concerns.length > 0 ? concerns : ['Evaluator raised concerns, please review and revise'] };
+    }
+
+    // No clear signal — default to NOT agreed (safe default)
+    this.logger.info('Negotiation: no clear agreement signal, defaulting to NOT agreed');
+    return { agreed: false, concerns: ['无法解析审查结果，请使用标准 JSON 格式重新输出'] };
   }
 }

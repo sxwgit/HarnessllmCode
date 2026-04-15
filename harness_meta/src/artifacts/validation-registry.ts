@@ -88,6 +88,53 @@ export const PROJECT_SUMMARY_REQUIRED_SECTIONS = [
   '总结与归档说明',
 ] as const;
 
+// ---- Requirement Semantic Validation ----
+
+/** Patterns that indicate a vague, non-actionable constraint or requirement */
+export const VAGUE_CONSTRAINT_PATTERNS = [
+  /^必须做好$/u,
+  /^需要$/u,
+  /^要$/u,
+  /^注意$/u,
+  /^保证$/u,
+  /^must$/i,
+  /^need$/i,
+  /^todo$/i,
+  /^tbd$/i,
+] as const;
+
+/** Patterns that indicate a vague, non-actionable out-of-scope description */
+export const VAGUE_OUT_OF_SCOPE_PATTERNS = [
+  /^不实现额外功能$/u,
+  /^不实现第三方功能$/u,
+  /^不做$/u,
+  /^其他$/u,
+  /^none$/i,
+  /^n\/?a$/i,
+] as const;
+
+// ---- Review Report Issue Semantic Validation ----
+
+/** Valid severity levels for review report issues */
+export const VALID_SEVERITY_LEVELS = ['blocking', 'critical', 'normal', 'minor', '严重', '重要', '一般', '轻微'] as const;
+
+/** Patterns that indicate a generic, non-actionable root cause description */
+export const GENERIC_ROOT_CAUSE_PATTERNS = [
+  /^(代码bug)+$/iu,
+  /^code\s+error$/i,
+  /^implementation\s+issue$/i,
+  /^(问题)+$/u,
+  /^(error)+$/i,
+  /^(bug)+$/i,
+  /^(fix)+$/i,
+] as const;
+
+/** Action verbs that indicate a concrete, executable fix suggestion */
+export const ACTION_VERB_PATTERNS = [
+  /(?:添加|修改|删除|替换|重构|优化|修复|增加|移除|更新|调整|补全|引入|提取|合并|拆分)/u,
+  /(?:add|modify|remove|replace|refactor|fix|update|change|create|implement|delete|adjust|move|rename|extract|merge|split)/i,
+] as const;
+
 // ---- Helper Functions ----
 
 /**

@@ -68,6 +68,6 @@
 1. 我目前在mac环境上， 请你适配我的环境
 2. 可以使用minimax进行开发，参考：
 api使用参考 https://platform.minimaxi.com/docs/api-reference/text-anthropic-api
-key：{{MINIMAX_API_KEY}}
+key：通过环境变量 `MINIMAX_API_KEY` 提供，不写入仓库
 使用模型：MiniMax-M2.7-highspeed
 3. 使用nodejs + zod

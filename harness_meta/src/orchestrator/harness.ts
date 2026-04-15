@@ -730,6 +730,11 @@ export class Harness {
     this.log(`>>> Sprint: ${sprintId} (effort: ${parseEffortScore(sprintSection)}/10)`);
     this.log('='.repeat(60));
 
+    // Recovery: if meta or project state is stuck in EXCEPTION_HANDLE/MANUAL_INTERVENTION,
+    // force-reset to SPRINT_DISPATCH before starting sprint execution.
+    // This prevents invalid state transitions when retrying after a rollback failure.
+    this.resetToSprintDispatchIfNeeded();
+
     // Check if we can resume from a sprint sub-state
     const latestCheckpoint = this.checkpointManager.getLatest();
     const resumeSubState = latestCheckpoint?.currentSprintId === sprintId
@@ -1202,6 +1207,25 @@ ${productSpec}
   // ============ Helpers ============
 
   /**
+   * Recovery: Reset meta and project states to SPRINT_DISPATCH if either
+   * is stuck in EXCEPTION_HANDLE or MANUAL_INTERVENTION. This prevents
+   * invalid state transitions when retrying after a rollback failure.
+   */
+  private resetToSprintDispatchIfNeeded(): void {
+    const meta = this.stateMachine.getMetaState().currentState;
+    const project = this.stateMachine.getProjectState().currentState;
+    const needsReset = [HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION];
+
+    if (needsReset.includes(meta) || needsReset.includes(project)) {
+      this.metaLogger.info('Resetting state to SPRINT_DISPATCH for sprint retry', {
+        metaState: meta,
+        projectState: project,
+      });
+      this.stateMachine.forceSetState(HarnessState.SPRINT_DISPATCH, `sprint retry recovery: meta=${meta} project=${project}`);
+    }
+  }
+
+  /**
    * M-01: Determine if a phase should be skipped based on checkpoint state.
    * Returns true if the checkpoint state is past (at or after) the current phase.
    * This enables checkpoint resume (断点续跑) by skipping already-completed phases.
@@ -1209,7 +1233,26 @@ ${productSpec}
   private shouldSkipPhase(checkpointState: HarnessState | undefined, currentPhase: HarnessState): boolean {
     if (!checkpointState) return false;
 
-    const normalizedCheckpointState = this.normalizeCheckpointState(checkpointState);
+    const sprintSubStates: HarnessState[] = [
+      HarnessState.SPRINT_NEGOTIATION,
+      HarnessState.DEV,
+      HarnessState.PRE_EVALUATION,
+      HarnessState.EVALUATION,
+      HarnessState.SPRINT_MERGE,
+    ];
+
+    // If checkpoint is at a sprint sub-state, we must NOT skip SPRINT_DISPATCH
+    // because the sprint loop needs to run and will handle sub-state resume internally.
+    if (sprintSubStates.includes(checkpointState)) {
+      // For sprint sub-states: skip everything before SPRINT_DISPATCH, but not SPRINT_DISPATCH itself
+      const preSprintPhases: HarnessState[] = [
+        HarnessState.META_INIT,
+        HarnessState.PROJECT_INIT,
+        HarnessState.REQUIREMENT_PARSE,
+        HarnessState.PLANNING,
+      ];
+      return preSprintPhases.includes(currentPhase);
+    }
 
     // Define the FSM state order for top-level phases in the run() method
     const phaseOrder: HarnessState[] = [
@@ -1222,7 +1265,7 @@ ${productSpec}
       HarnessState.RELEASE,
     ];
 
-    const checkpointIdx = phaseOrder.indexOf(normalizedCheckpointState);
+    const checkpointIdx = phaseOrder.indexOf(checkpointState);
     const currentIdx = phaseOrder.indexOf(currentPhase);
 
     // If checkpoint state is past the current phase, skip it
@@ -1740,14 +1783,41 @@ ${structure.map(item => `- ${item}`).join('\n')}
         }
         break;
       }
+      case HarnessState.SPRINT_NEGOTIATION: {
+        if (context?.sprintId) {
+          const contractPath = resolve(this.targetDir, `docs/sprint/sprint_contract_${context.sprintId}.md`);
+          if (!existsSync(contractPath)) {
+            errors.push(`Post-condition: sprint contract not found after SPRINT_NEGOTIATION for ${context.sprintId}`);
+          } else {
+            const validation = this.artifactValidator.validateSprintContract(contractPath);
+            if (!validation.valid) {
+              errors.push(`Post-condition: sprint contract invalid after SPRINT_NEGOTIATION: ${validation.errors.join('; ')}`);
+            }
+          }
+        }
+        break;
+      }
+      case HarnessState.EVALUATION: {
+        if (context?.sprintId) {
+          const reviewPath = resolve(this.targetDir, `docs/sprint/review_report_${context.sprintId}.md`);
+          if (!existsSync(reviewPath)) {
+            errors.push(`Post-condition: review report not found after EVALUATION for ${context.sprintId}`);
+          } else {
+            const validation = this.artifactValidator.validateReviewReport(reviewPath);
+            if (!validation.valid) {
+              errors.push(`Post-condition: review report invalid after EVALUATION: ${validation.errors.join('; ')}`);
+            }
+          }
+        }
+        break;
+      }
       default:
         // No post-condition for this phase
         break;
     }
 
     if (errors.length > 0) {
-      throw new Error(`Phase ${phase} post-condition failed:\n${errors.join('\n')}`);
-    }
+      throw new Error(`Phase ${phase} post-condition failed:\n${errors.join('\n')}`);    }
   }
 
   private parseSprintIds(sprintPlan: string): string[] {
@@ -1800,7 +1870,7 @@ ${structure.map(item => `- ${item}`).join('\n')}
    * Replaces fragile regex-based checking with deterministic object-level validation.
    */
   private checkEvaluationPassed(reviewReport: string): boolean {
-    // 1. Parse structured data from the review report (fallback to regex if validator not initialized)
+    // 1. Parse structured data — extractReviewReportData tries JSON block first, then regex fallback
     let structured: { sprintId: string; passed: boolean; scores: Array<{ dimension: string; score: number }>; weightedAverage: number };
     if (this.artifactValidator) {
       structured = this.artifactValidator.extractReviewReportData(reviewReport);
@@ -1817,7 +1887,17 @@ ${structure.map(item => `- ${item}`).join('\n')}
       };
     }
 
-    // 2. Hard rule: explicit fail keyword overrides everything
+    // 2. Validate extracted scores have correct types
+    if (structured.scores.length > 0) {
+      for (const s of structured.scores) {
+        if (typeof s.dimension !== 'string' || typeof s.score !== 'number') {
+          this.log('WARNING: review report score entry failed basic validation, treating as not passed');
+          return false;
+        }
+      }
+    }
+
+    // 3. Hard rule: explicit fail keyword overrides everything
     if (/验收结果[:：]\s*不通过|验收.*不通过/i.test(reviewReport)) return false;
 
     // 3. Hard rule: must have an explicit passing conclusion

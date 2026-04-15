@@ -17,6 +17,7 @@ export interface RollbackRecord {
   toTag?: string;
   commitsReverted: number;
   success: boolean;
+  partial: boolean;
   auditLog: string;
 }
 
@@ -62,6 +63,7 @@ export class RollbackManager {
       sprintId,
       commitsReverted: 0,
       success: false,
+      partial: false,
       auditLog: '',
     };
 
@@ -113,6 +115,7 @@ export class RollbackManager {
     record.commitsReverted = commitsToRevert.length;
 
     // 4. Revert each commit in reverse order — each revert gets its own commit (S-02)
+    // If a clean revert fails, attempt force-revert (--no-commit + checkout --theirs)
     let revertedCount = 0;
     let conflictCount = 0;
     for (const commit of commitsToRevert.reverse()) {
@@ -122,18 +125,33 @@ export class RollbackManager {
         await this.git.commitRevert(`sprint-${sprintId}: revert ${commit.substring(0, 8)}`);
         revertedCount++;
       } catch (err) {
-        conflictCount++;
-        record.auditLog += `\nConflict reverting ${commit}: ${err instanceof Error ? err.message : String(err)}`;
-        this.logger.warn('Revert conflict, aborting remaining reverts', { commit });
-        // Stop on first conflict rather than silently continuing
-        break;
+        // Attempt force-revert: --no-commit + checkout --theirs + commit
+        this.logger.warn(`Clean revert failed for ${commit}, trying force-revert`, {
+          commit,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        const forceOk = await this.attemptForceRevert(commit, sprintId);
+        if (forceOk) {
+          revertedCount++;
+          record.auditLog += `\nForce-reverted ${commit} (conflict resolved with --theirs)`;
+        } else {
+          conflictCount++;
+          record.auditLog += `\nUnrevertable commit ${commit}: ${err instanceof Error ? err.message : String(err)}`;
+          this.logger.warn('Commit could not be reverted, skipping', { commit });
+          // Continue with next commit instead of aborting entirely
+        }
       }
     }
 
     if (conflictCount > 0) {
-      record.success = false;
-      record.auditLog += `\nSprint ${sprintId} rollback incomplete: ${revertedCount}/${record.commitsReverted} reverted, ${conflictCount} conflicts`;
-      throw new Error(`Sprint rollback had ${conflictCount} conflict(s), only ${revertedCount}/${record.commitsReverted} commits reverted`);
+      record.partial = true;
+      record.auditLog += `\nSprint ${sprintId} rollback partial: ${revertedCount}/${record.commitsReverted} reverted, ${conflictCount} unrevertable`;
+      this.logger.warn('Sprint rollback completed with partial success', {
+        sprintId,
+        revertedCount,
+        conflictCount,
+        total: record.commitsReverted,
+      });
     }
 
     // M-03: Batch revert commit cleanup — create a summary tag marking the rollback point
@@ -276,5 +294,52 @@ export class RollbackManager {
       .filter(t => t.includes('sprint') && t.includes('complete'))
       .reverse();
     return sprintTags.length > 0 ? sprintTags[0] : null;
+  }
+
+  /**
+   * Attempt a force-revert for a commit that had conflicts.
+   * Uses `git revert --no-commit` followed by `git checkout --theirs .`
+   * to resolve conflicts by taking the pre-sprint version (which is what a rollback wants).
+   */
+  private async attemptForceRevert(commitHash: string, sprintId: string): Promise<boolean> {
+    const { execa } = await import('execa');
+    try {
+      // Step 1: Start revert without committing
+      await execa('git', ['revert', '--no-commit', commitHash], {
+        cwd: this.targetDir,
+        reject: false,
+      });
+
+      // Step 2: Resolve conflicts by taking the pre-sprint version (theirs in revert context)
+      await execa('git', ['checkout', '--theirs', '.'], {
+        cwd: this.targetDir,
+        reject: false,
+      });
+
+      // Step 3: Stage everything
+      await execa('git', ['add', '.'], {
+        cwd: this.targetDir,
+        reject: false,
+      });
+
+      // Step 4: Commit the force-revert
+      await this.git.commitRevert(`sprint-${sprintId}: force-revert ${commitHash.substring(0, 8)}`);
+      return true;
+    } catch (err) {
+      this.logger.warn('Force-revert also failed', {
+        commit: commitHash,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Clean up the revert state
+      try {
+        await execa('git', ['revert', '--abort'], {
+          cwd: this.targetDir,
+          reject: false,
+        });
+      } catch {
+        // Ignore cleanup errors
+      }
+      return false;
+    }
   }
 }

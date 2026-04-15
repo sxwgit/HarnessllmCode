@@ -1,164 +1,85 @@
-# 标准化需求文档
+# 需求文档：CodeAgent CLI
 
 ## 1. 项目名称与概述
 
-**项目名称**: MiniCode (CLI Agent Tool)
+**项目名称**: CodeAgent
 
-**项目概述**:
-一款类 Claude Code 的命令行 AI Agent 工具，基于 Node.js 开发，通过流式 API 与大模型交互，驱动工具系统完成代码开发任务。用户通过终端与 Agent 对话，Agent 可执行 Bash 命令、读写文件、搜索代码等操作。
+**项目类型**: 类 Claude Code 的命令行 AI 编程助手
 
-**核心价值主张**: 开发者通过自然语言指令驱动 AI 完成编码任务，工具系统作为 Agent 的执行手脚。
+**项目概述**: 
+一个运行在终端的 AI Agent 系统，通过大模型流式交互、工具调用循环（Tool-Use Loop）和权限控制机制，实现自动化代码开发、搜索、编辑等任务。系统以"工具即一等公民"为设计理念，通过注册机制管理各类工具，支持子 Agent 嵌套执行。
 
 ---
 
 ## 2. 核心功能清单
 
-### P0 优先级（核心骨架 - MVP）
-
-| 功能 ID | 模块 | 功能描述 | 验收要点 |
-|---------|------|----------|----------|
-| P0-F01 | **大模型交互** | Anthropic API 兼容的流式调用 + Tool-Use Loop | 支持 `stream: true`，完整解析 `content` + `tool_use` + `tool_result` 循环 |
-| P0-F02 | **工具系统** | Tool 类型定义 + 注册表机制 | 定义 `Tool` 接口，包含 name/schema/execute/permissions；注册表支持 add/get/list |
-| P0-F03 | **BashTool** | 执行 shell 命令 | 支持 `cmd` 参数，执行后返回 stdout/stderr/exitCode |
-| P0-F04 | **FileReadTool** | 读取文件内容 | 支持 `path` 参数，返回文件内容或错误 |
-| P0-F05 | **FileWriteTool** | 写入文件内容 | 支持 `path` + `content` 参数，覆盖写入 |
-| P0-F06 | **FileEditTool** | 编辑文件（局部修改） | 支持 `path` + `old_string` + `new_string` 参数 |
-| P0-F07 | **GlobTool** | 文件路径模式匹配 | 支持 `pattern` 参数，返回匹配文件列表 |
-| P0-F08 | **GrepTool** | 文本内容搜索 | 支持 `pattern` + `path` 参数，返回匹配行及位置 |
-| P0-F09 | **CLI 入口** | 命令行参数解析和启动 | 支持 `minicode [task]` 形式启动，解析 `--no-stream` 等选项 |
-| P0-F10 | **权限系统** | 危险操作的用户确认 | 执行 Bash/Write 等操作前 prompt 用户确认，支持 `yes/no/all` |
-| P0-F11 | **上下文管理** | 系统提示词构建 + 消息规范化 | 构建包含可用工具列表的系统提示词，规范化消息格式 |
-
-### P1 优先级（基础体验 - 日常可用）
-
-| 功能 ID | 模块 | 功能描述 | 验收要点 |
-|---------|------|----------|----------|
-| P1-F01 | **AgentTool** | 子 Agent 并行执行 | 作为工具暴露，支持嵌套调用子进程执行独立对话 |
-| P1-F02 | **上下文压缩** | Compact 消息压缩 | 合并历史消息为摘要，控制 token 总量 |
-| P1-F03 | **REPL UI** | 终端交互界面 | 支持多行输入、命令历史（↑↓）、语法高亮 |
-| P1-F04 | **认证系统** | API Key 管理 | 从环境变量或配置文件读取 MiniMax API Key |
-| P1-F05 | **Token 估算** | Token 计数与成本控制 | 估算请求/响应 token 数，打印消耗统计 |
-| P1-F06 | **AskUserQuestion** | 用户交互工具 | Agent 可主动向用户提问，获取额外信息 |
-
-### P2 优先级（进阶能力 - 锦上添花）
-
-| 功能 ID | 模块 | 功能描述 |
-|---------|------|----------|
-| P2-F01 | **Slash 命令** | `/commit`, `/review`, `/compact` 等快捷命令 |
-| P2-F02 | **会话恢复** | Resume 断线会话，继续执行 |
-| P2-F03 | **CLAUDE.md** | 项目级配置，支持自定义系统提示词 |
-| P2-F04 | **MCP 集成** | 外部工具服务器协议支持 |
-| P2-F05 | **OAuth** | 完整用户认证流程 |
-| P2-F06 | **Web 工具** | WebFetch + WebSearch 网络访问 |
+| 功能ID | 模块 | 功能描述 | 优先级 |
+|--------|------|----------|--------|
+| **F001** | 大模型交互 | Anthropic API 兼容的 MiniMax 流式调用 + Tool-Use Loop 执行引擎 | P0 |
+| **F002** | 工具系统 | Tool 接口类型定义 + 全局工具注册表管理 | P0 |
+| **F003** | 核心工具-Bash | BashTool: 执行 shell 命令，权限控制 | P0 |
+| **F004** | 核心工具-文件读取 | FileReadTool: 按路径读取文件内容 | P0 |
+| **F005** | 核心工具-文件写入 | FileWriteTool: 创建/覆盖文件，支持目录创建 | P0 |
+| **F006** | 核心工具-文件编辑 | FileEditTool: 基于 diff 的局部编辑 | P0 |
+| **F007** | 搜索工具-Grep | GrepTool: 正则搜索文件内容 | P0 |
+| **F008** | 搜索工具-Glob | GlobTool: 按模式匹配文件路径 | P0 |
+| **F009** | CLI 入口 | 命令行参数解析 (init, chat, --help 等) | P0 |
+| **F010** | 权限系统 | 用户确认机制 (Yes/No/Always/Later) + 危险命令识别 | P0 |
+| **F011** | 上下文管理 | System Prompt 构建 + 消息规范化 (Human/Assistant/Tool Result) | P0 |
+| **F012** | 子 Agent | AgentTool: 启动子进程执行独立对话循环，支持嵌套 | P1 |
+| **F013** | 上下文压缩 | CompactTool: 长对话历史压缩摘要 | P1 |
+| **F014** | REPL UI | 终端交互界面：消息渲染 + 输入框 + 流式输出 | P1 |
+| **F015** | 认证模块 | API Key 验证 (环境变量 MINIMAX_API_KEY) | P1 |
+| **F016** | Token 估算 | 输入/输出 token 计数与成本估算 | P1 |
+| **F017** | AskUserQuestion | 用户交互工具：多选项/确认/文本输入 | P1 |
+| **F018** | Slash 命令 | /commit, /review, /compact 等快捷命令 | P2 |
+| **F019** | 会话恢复 | Resume 会话：从中断点恢复对话状态 | P2 |
+| **F020** | CLAUDE.md | 项目级配置加载与解析 | P2 |
+| **F021** | MCP 集成 | 外部工具服务器协议支持 | P2 |
+| **F022** | OAuth 认证 | 完整第三方认证流程 | P2 |
+| **F023** | WebFetch | HTTP 请求工具 | P2 |
+| **F024** | WebSearch | 搜索引擎集成 | P2 |
 
 ---
 
 ## 3. 技术栈要求
 
-### 运行环境
-- **OS**: macOS (当前开发环境)
-- **Node.js**: >= 18.0.0
-- **包管理器**: bun (优先) 或 npm
+| 类别 | 要求 |
+|------|------|
+| **运行时** | Node.js (>=18) |
+| **类型校验** | Zod (Schema 定义与验证) |
+| **API 兼容** | MiniMax Text API (Anthropic-compatible) |
+| **模型** | MiniMax-M2.7-highspeed |
+| **运行环境** | macOS |
+| **API Key 配置** | 环境变量 `MINIMAX_API_KEY`，不写入代码仓库 |
 
-### 核心依赖
+### 架构原则
 
-| 依赖 | 用途 | 版本要求 |
-|------|------|----------|
-| `zod` | Schema 校验与类型定义 | ^3.x |
-| `minimaxi` 或原生 `fetch` | MiniMax API 调用 | - |
-| `ink` (可选) | React 式终端 UI | ^4.x |
-| `react` (可选) | UI 组件化 | ^18.x |
-
-### API 配置
-
-| 配置项 | 值 |
-|--------|-----|
-| **API Endpoint** | `https://api.minimaxi.com/v1/text/chatroom_v2` |
-| **Model** | `MiniMax-M2.7-highspeed` |
-| **认证方式** | Bearer Token (`{{MINIMAX_API_KEY}}`) |
-| **协议** | Anthropic API 兼容 (stream: true) |
-
-### 项目结构 (推荐)
-
-```
-minicode/
-├── src/
-│   ├── index.ts           # CLI 入口
-│   ├── client.ts          # API 客户端
-│   ├── agent.ts           # Agent 主循环 (Tool-Use Loop)
-│   ├── tools/
-│   │   ├── index.ts       # 工具注册表
-│   │   ├── bash.ts        # BashTool
-│   │   ├── file-read.ts   # FileReadTool
-│   │   ├── file-write.ts  # FileWriteTool
-│   │   ├── file-edit.ts   # FileEditTool
-│   │   ├── glob.ts        # GlobTool
-│   │   └── grep.ts        # GrepTool
-│   ├── ui/
-│   │   └── repl.ts        # REPL 交互界面
-│   ├── types.ts           # Zod 类型定义
-│   └── prompt.ts          # 系统提示词构建
-├── package.json
-└── tsconfig.json
-```
+1. **Tool 是一等公民**: 每个工具自包含（Schema + 权限 + 执行逻辑），通过注册表统一管理
+2. **Feature Flag 驱动**: 使用编译时特性开关实现功能渐进式发布
+3. **流式优先**: API 调用到 UI 渲染全部流式处理
+4. **子 Agent 工具化**: AgentTool 作为普通工具，通过子进程执行独立对话
 
 ---
 
 ## 4. 约束条件
 
-### 功能性约束
-
 | 约束项 | 说明 |
 |--------|------|
-| **流式优先** | 所有 API 调用和 UI 渲染必须流式，不得阻塞等待完整响应 |
-| **安全底线** | 所有 Bash 执行、文件覆盖操作必须经用户确认 |
-| **Anthropic 兼容** | 工具调用协议遵循 Anthropic Tool-Use 格式 |
-| **零外部 daemon** | 不得依赖后台服务进程，纯单机运行 |
-
-### 技术约束
-
-| 约束项 | 说明 |
-|--------|------|
-| **Node.js 单 runtime** | 使用 `bun:x` 或原生 `Node.js` API，不混用 runtime |
-| **TypeScript 强类型** | 核心模块全部使用 TypeScript，Zod 做运行时校验 |
-| **Feature Flag** | 使用 `bun:bundle` 的 `feature()` 做编译时功能开关 |
-| **无 native 依赖** | 避免需要编译的 native 模块，保证跨平台 |
-
-### 环境约束
-
-| 约束项 | 说明 |
-|--------|------|
-| **macOS 原生** | 使用 macOS 原生命令（`os.machine` 检测），不依赖 Linux 特定工具 |
-| **API Key 安全** | 不得硬编码 Key，通过环境变量 `MINIMAX_API_KEY` 读取 |
+| **环境限制** | 仅支持 macOS 环境 |
+| **API Key 安全** | 不得将 `MINIMAX_API_KEY` 写入任何源码或配置文件 |
+| **依赖管理** | 使用 npm/node_modules，不引入 Python 生态 |
+| **最小可用版本** | P0 功能必须完整可用，不可部分实现 |
 
 ---
 
 ## 5. 不做范围
 
-以下功能明确不在本项目范围内：
-
-| 范围外 | 说明 |
-|--------|------|
-| **GUI 客户端** | 无桌面应用或 Web UI，纯 CLI 工具 |
-| **多用户/团队协作** | 无用户体系、无权限继承、无团队概念 |
-| **代码审查/CI 集成** | 不对接 GitHub/GitLab，不做 PR 审查 |
-| **持久化会话存储** | 无数据库，会话仅内存存在 |
-| **插件市场** | 无插件机制，工具集固定 |
-| **Windows/Linux 兼容** | 仅保证 macOS 可运行，其他平台不承诺 |
-| **完整 Claude Code 兼容** | 参考架构思路，非 1:1 复刻 |
-
----
-
-## 附录: MVP 最小功能集 (20% 工作量)
-
-若需最快速度产出可用版本，仅实现以下 5 项：
-
-```
-[P0-F01] 流式 API 调用 + Tool-Use Loop
-[P0-F03] BashTool
-[P0-F04] FileReadTool
-[P0-F09] 简单 CLI 入口
-[P0-F10] 基础权限确认
-```
-
-**预期价值**: 可启动对话、执行命令、读写文件、安全可控。
+| 模块 | 说明 |
+|------|------|
+| **Windows/Linux 支持** | 当前版本仅支持 macOS |
+| **本地模型** | 不支持 Ollama 或本地 LLM |
+| **GUI 界面** | 仅 CLI 终端界面，无桌面/Web UI |
+| **实时协作** | 不支持多用户同时编辑 |
+| **代码解释器** | 不实现代码执行沙箱（安全隔离） |
+| **移动端** | 无移动端适配计划 |

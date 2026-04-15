@@ -23,6 +23,8 @@ export interface Checkpoint {
   sprintSubState?: HarnessState;
   /** Current iteration number within the sprint (1-based) */
   sprintIteration?: number;
+  /** Number of rollback attempts made for the current sprint — preserved for precise recovery */
+  sprintAttemptCount?: number;
 }
 
 /**

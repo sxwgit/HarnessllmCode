@@ -30,6 +30,17 @@
 ### 2. `docs/plan/architecture_design.md` - 架构设计文档
 必须包含：整体架构分层图、核心模块职责划分、数据模型定义、接口规范、技术栈选型与版本锁定、异常处理架构
 
+**数据模型格式要求（严格遵守）：**
+数据模型部分必须使用 `- ` 列表格式定义每个模型，例如：
+```markdown
+## 数据模型
+
+- Message: 聊天消息模型，包含字段 role(字符串), content(字符串数组), timestamp(数字)
+- Session: 会话模型，包含字段 id(字符串), messages(Message数组), createdAt(数字)
+- ToolCall: 工具调用模型，包含字段 name(字符串), arguments(对象), id(字符串)
+```
+**禁止**使用子标题（###）或纯表格来定义数据模型，必须使用上述列表格式。
+
 ### 3. `docs/plan/project_structure.md` - 项目结构文档
 必须包含：完整项目目录树、每个目录用途、核心文件路径与职责、配置文件管理规范
 

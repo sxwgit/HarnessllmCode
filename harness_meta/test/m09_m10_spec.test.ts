@@ -238,8 +238,8 @@ No critical vulnerabilities
     const result = validator.validateReviewReport(file);
     expect(result.valid).toBe(false);
     expect(result.errors).toContain('Review issue ISSUE-001 must include a concrete file path and line number');
-    expect(result.errors).toContain('Review issue ISSUE-001 must include an explicit root cause');
-    expect(result.errors).toContain('Review issue ISSUE-001 must include a concrete fix suggestion');
+    expect(result.errors.some(e => e.includes('ISSUE-001') && e.includes('root cause'))).toBe(true);
+    expect(result.errors.some(e => e.includes('ISSUE-001') && e.includes('fix suggestion'))).toBe(true);
   });
 
   it('TPL_UNIT_004 accepts only final_acceptance_report.md files with complete acceptance sections', () => {

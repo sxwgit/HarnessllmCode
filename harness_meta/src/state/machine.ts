@@ -116,6 +116,34 @@ export class StateMachine {
     this.saveProjectState();
   }
 
+  /**
+   * Force-set the meta and project states to a given state, bypassing
+   * transition validation. This is a controlled escape hatch for exception
+   * recovery paths where the normal transition graph would reject a jump.
+   * Every call is recorded with an audit reason for traceability.
+   */
+  forceSetState(state: HarnessState, auditReason: string): void {
+    const prev = this.metaState.currentState;
+    this.metaState.previousState = prev;
+    this.metaState.currentState = state;
+    this.metaState.updatedAt = new Date().toISOString();
+    this.saveMetaState();
+
+    this.projectState.previousState = this.projectState.currentState;
+    this.projectState.currentState = state;
+    this.projectState.version++;
+    this.projectState.updatedAt = new Date().toISOString();
+    this.saveProjectState();
+
+    // Audit log written to both state files — consumers read via JSON
+    const auditEntry = { action: 'forceSetState', from: prev, to: state, reason: auditReason, ts: new Date().toISOString() };
+    if (!this.metaState.forceSetStateAudit) {
+      (this.metaState as Record<string, unknown>).forceSetStateAudit = [];
+    }
+    (this.metaState as Record<string, unknown[]>).forceSetStateAudit!.push(auditEntry);
+    this.saveMetaState();
+  }
+
   restoreFromCheckpoint(checkpoint: Checkpoint): void {
     this.metaState.currentState = checkpoint.state;
     this.metaState.currentSprintId = checkpoint.currentSprintId;
@@ -217,14 +245,16 @@ export class StateMachine {
       [HarnessState.REQUIREMENT_PARSE]: [HarnessState.PLANNING, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.PLANNING]: [HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.SPRINT_DISPATCH]: [HarnessState.SPRINT_NEGOTIATION, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
-      [HarnessState.SPRINT_NEGOTIATION]: [HarnessState.DEV, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
-      [HarnessState.DEV]: [HarnessState.PRE_EVALUATION, HarnessState.EXCEPTION_HANDLE],
-      [HarnessState.PRE_EVALUATION]: [HarnessState.EVALUATION, HarnessState.DEV, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.SPRINT_NEGOTIATION]: [HarnessState.DEV, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
+      [HarnessState.DEV]: [HarnessState.PRE_EVALUATION, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.PRE_EVALUATION]: [HarnessState.EVALUATION, HarnessState.DEV, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.EVALUATION]: [
         HarnessState.SPRINT_MERGE,
         HarnessState.DEV,
         HarnessState.PRE_EVALUATION,
         HarnessState.PLANNING,
+        HarnessState.SPRINT_DISPATCH,
+        HarnessState.SPRINT_NEGOTIATION,
         HarnessState.EXCEPTION_HANDLE,
       ],
       [HarnessState.SPRINT_MERGE]: [HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
@@ -260,11 +290,11 @@ export class StateMachine {
       [HarnessState.REQUIREMENT_PARSE]: [HarnessState.PLANNING, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.PLANNING]: [HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.SPRINT_DISPATCH]: [HarnessState.SPRINT_NEGOTIATION, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
-      [HarnessState.SPRINT_NEGOTIATION]: [HarnessState.DEV, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
-      [HarnessState.DEV]: [HarnessState.PRE_EVALUATION, HarnessState.SPRINT_NEGOTIATION, HarnessState.EXCEPTION_HANDLE],
-      [HarnessState.PRE_EVALUATION]: [HarnessState.EVALUATION, HarnessState.DEV, HarnessState.SPRINT_NEGOTIATION, HarnessState.EXCEPTION_HANDLE],
-      [HarnessState.EVALUATION]: [HarnessState.SPRINT_MERGE, HarnessState.DEV, HarnessState.SPRINT_NEGOTIATION, HarnessState.EXCEPTION_HANDLE],
-      [HarnessState.SPRINT_MERGE]: [HarnessState.SPRINT_NEGOTIATION, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.SPRINT_NEGOTIATION]: [HarnessState.DEV, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
+      [HarnessState.DEV]: [HarnessState.PRE_EVALUATION, HarnessState.SPRINT_NEGOTIATION, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.PRE_EVALUATION]: [HarnessState.EVALUATION, HarnessState.DEV, HarnessState.SPRINT_NEGOTIATION, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.EVALUATION]: [HarnessState.SPRINT_MERGE, HarnessState.DEV, HarnessState.SPRINT_NEGOTIATION, HarnessState.SPRINT_DISPATCH, HarnessState.EXCEPTION_HANDLE],
+      [HarnessState.SPRINT_MERGE]: [HarnessState.SPRINT_NEGOTIATION, HarnessState.SPRINT_DISPATCH, HarnessState.FINAL_ACCEPTANCE, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.FINAL_ACCEPTANCE]: [HarnessState.RELEASE, HarnessState.EXCEPTION_HANDLE, HarnessState.MANUAL_INTERVENTION],
       [HarnessState.RELEASE]: [HarnessState.FINISHED, HarnessState.EXCEPTION_HANDLE],
       [HarnessState.EXCEPTION_HANDLE]: [
